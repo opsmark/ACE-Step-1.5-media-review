@@ -3,21 +3,55 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import uvicorn
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return whether a bind host is limited to the local machine."""
+
+    normalized = host.strip().lower()
+    if normalized == "localhost":
+        return True
+
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _resolve_app_factory(
+    app_factory: Optional[Callable[[], Any]],
+) -> Callable[[], Any]:
+    """Return the supplied app factory or import the production factory lazily."""
+
+    if app_factory is not None:
+        return app_factory
+
+    from acestep.api_server import create_app
+
+    return create_app
 
 
 def run_api_server_main(
     env_bool: Callable[[str, bool], bool],
     argv: Optional[list[str]] = None,
+    app_factory: Optional[Callable[[], Any]] = None,
 ) -> None:
-    """Parse CLI args, set environment overrides, and start uvicorn.
+    """Parse CLI args, apply overrides, build the app, and start uvicorn.
 
     Args:
         env_bool: Boolean env parser used for defaults.
-        argv: Optional explicit arg list (used by tests). Defaults to process argv.
+        argv: Optional explicit arg list used by tests. Defaults to process argv.
+        app_factory: Optional application factory used by tests. The production
+            factory is imported lazily after all environment overrides are set.
+
+    Raises:
+        SystemExit: If an unauthenticated server is configured to bind beyond
+            the loopback interface.
     """
 
     parser = argparse.ArgumentParser(description="ACE-Step API server")
@@ -67,8 +101,17 @@ def run_api_server_main(
     )
     args = parser.parse_args(args=argv)
 
-    if args.api_key:
-        os.environ["ACESTEP_API_KEY"] = args.api_key
+    api_key = (args.api_key or "").strip() or None
+    if api_key is not None:
+        os.environ["ACESTEP_API_KEY"] = api_key
+    else:
+        os.environ.pop("ACESTEP_API_KEY", None)
+
+    if not _is_loopback_host(str(args.host)) and api_key is None:
+        parser.error(
+            "Refusing to bind an unauthenticated API beyond loopback. "
+            "Set --api-key (or ACESTEP_API_KEY) or bind to 127.0.0.1/::1/localhost."
+        )
 
     if args.download_source and args.download_source != "auto":
         os.environ["ACESTEP_DOWNLOAD_SOURCE"] = args.download_source
@@ -86,9 +129,11 @@ def run_api_server_main(
         os.environ["ACESTEP_NO_INIT"] = "true"
         print("[API Server] --no-init: Models will NOT be loaded at startup (lazy load on first request)")
 
+    application = _resolve_app_factory(app_factory)()
+
     # IMPORTANT: in-memory queue/store -> workers MUST be 1
     uvicorn.run(
-        "acestep.api_server:app",
+        application,
         host=str(args.host),
         port=int(args.port),
         reload=False,
