@@ -8,7 +8,7 @@ The workflow `.github/workflows/security-candidate-qualification.yml` checks the
 
 ## Preserved failed qualification history
 
-The first workflow run, `38144828646`, was not relabeled as a clean pass.
+The first central workflow run, `38144828646`, was not relabeled as a clean pass.
 
 - TensorBoard's four candidate tests passed, but the job was marked failed afterward because the old `setup-python` pip-cache configuration expected a cache directory in a no-dependency job.
 - Training export and LoKr resume failed during test-module import because `acestep.training.__init__` eagerly imported the full dataset/audio/trainer stack. The failures exposed a real package import-coupling defect; adding more dependencies solely to hide it was rejected.
@@ -16,14 +16,21 @@ The first workflow run, `38144828646`, was not relabeled as a clean pass.
 
 Corrections:
 
-- GitHub Actions are pinned to the exact current release commits inspected on 2026-10-11.
+- GitHub Actions are pinned to exact inspected release commits.
 - Empty pip caching was removed.
 - The training package now preserves its public API through lazy exports, so lightweight path-safety and checkpoint-state modules do not import TorchAudio, dataset decoding or the trainer stack unless those public symbols are actually requested.
 - Isolated subprocess regressions verify that path-safety and configuration imports remain lightweight and backward compatible.
 
-## Clean supported-runtime run
+The model-code provenance candidate also preserves two unsuccessful construction runs:
 
-Workflow run `38145254098` completed successfully across all nine jobs then configured:
+- `38146150618` stopped because the bounded transformation expected one scoring loader but the maintained source contained two equivalent sites.
+- `38146235888` stopped because the generated replacement had invalid Python indentation.
+
+Neither failure produced a promoted source candidate. The final transformation explicitly required two scoring replacements, generated exact indentation, ran `compileall`, passed 11 focused tests on CPython 3.11.17 and committed the candidate in successful run `38146298233`. Its temporary write-enabled builder workflow was deleted afterward and is not part of the candidate PR.
+
+## Supported-runtime results
+
+Run `38145254098` completed successfully across the original nine configured jobs:
 
 - API authentication boundary — Python 3.11
 - queue admission atomicity — Python 3.11
@@ -35,7 +42,9 @@ Workflow run `38145254098` completed successfully across all nine jobs then conf
 - LoKr data-only resume plus lazy-import regressions — Python 3.11 / CPU PyTorch
 - SimpleMV no-shell execution — Node 22
 
-After that run started, the model-selector branch was expanded to preserve the complete maintained downloadable model set plus built-in local-only variants. This file update triggers another full workflow run so the final receipt does not silently reuse the earlier 15-test model-registry result for the newer 17-test branch.
+After the model-selector branch expanded to retain the complete maintained downloadable model set and built-in local-only variants, run `38145465223` also completed successfully. Its model-selector job checked branch head `638ad0181085c3bd4ad2d07442a1d4a1c3c66526` on CPython 3.11.17 and passed all 17 focused tests.
+
+Run `38146396591` added model-code provenance as the tenth job and completed successfully across all ten jobs. The new read-only job separately checked the resulting branch, compiled the changed runtime sources and passed all 11 repository-owned-code/data-only-checkpoint tests on Python 3.11. This is source-level qualification for draft PR #10, not a real checkpoint, GPU or service test.
 
 ## Promotion boundary
 
