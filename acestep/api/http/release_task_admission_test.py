@@ -80,6 +80,12 @@ class _Fixture:
 
 
 class ReleaseTaskAdmissionTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._original_parser = route_module.parse_release_task_request
+
+    async def asyncTearDown(self) -> None:
+        route_module.parse_release_task_request = self._original_parser
+
     async def test_known_full_rejections_do_not_create_phantom_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = _Fixture()
