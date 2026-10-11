@@ -401,7 +401,11 @@ class LLMHandler:
     def _load_pytorch_model(self, model_path: str, device: str) -> Tuple[bool, str]:
         """Load PyTorch model from path and return (success, status_message)"""
         try:
-            self.llm = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)
+            from acestep.api.trusted_model_loader import (
+                load_trusted_causal_lm,
+            )
+
+            self.llm = load_trusted_causal_lm(model_path)
             if not self.offload_to_cpu:
                 self.llm = self.llm.to(device).to(self.dtype)
             else:
@@ -609,7 +613,11 @@ class LLMHandler:
             logger.info("loading 5Hz LM tokenizer... it may take 80~90s")
             start_time = time.time()
             # TODO: load tokenizer too slow, not found solution yet
-            llm_tokenizer = AutoTokenizer.from_pretrained(full_lm_model_path, use_fast=True)
+            llm_tokenizer = AutoTokenizer.from_pretrained(
+                full_lm_model_path,
+                use_fast=True,
+                local_files_only=True,
+            )
             logger.info(f"5Hz LM tokenizer loaded successfully in {time.time() - start_time:.2f} seconds")
             self.llm_tokenizer = llm_tokenizer
 
@@ -4190,10 +4198,13 @@ class LLMHandler:
                 # This will load the original unfused weights
                 import time
                 start_time = time.time()
-                self._hf_model_for_scoring = AutoModelForCausalLM.from_pretrained(
+                from acestep.api.trusted_model_loader import (
+                    load_trusted_causal_lm,
+                )
+
+                self._hf_model_for_scoring = load_trusted_causal_lm(
                     model_path,
-                    trust_remote_code=True,
-                    torch_dtype=self.dtype
+                    torch_dtype=self.dtype,
                 )
                 load_time = time.time() - start_time
                 logger.info(f"HuggingFace model loaded in {load_time:.2f}s")
@@ -4228,10 +4239,13 @@ class LLMHandler:
 
                 import time
                 start_time = time.time()
-                self._hf_model_for_scoring = AutoModelForCausalLM.from_pretrained(
+                from acestep.api.trusted_model_loader import (
+                    load_trusted_causal_lm,
+                )
+
+                self._hf_model_for_scoring = load_trusted_causal_lm(
                     model_path,
-                    trust_remote_code=True,
-                    torch_dtype=self.dtype
+                    torch_dtype=self.dtype,
                 )
                 load_time = time.time() - start_time
                 logger.info(f"HuggingFace model loaded in {load_time:.2f}s")

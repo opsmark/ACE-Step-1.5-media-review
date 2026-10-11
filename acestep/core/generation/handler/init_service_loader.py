@@ -122,8 +122,6 @@ class InitServiceLoaderMixin(InitServiceLoaderComponentsMixin):
         quantization: Optional[str],
     ) -> str:
         """Load DiT, apply compile/quantization options, and return selected attention backend."""
-        from transformers import AutoModel
-
         if not os.path.exists(model_checkpoint_path):
             raise FileNotFoundError(f"ACE-Step V1.5 checkpoint not found at {model_checkpoint_path}")
 
@@ -172,9 +170,16 @@ class InitServiceLoaderMixin(InitServiceLoaderComponentsMixin):
         for candidate in attn_candidates:
             try:
                 logger.info(f"[initialize_service] Attempting to load model with attention implementation: {candidate}")
-                self.model = AutoModel.from_pretrained(
+                from acestep.api.trusted_model_loader import (
+                    load_trusted_dit_model,
+                )
+
+                model_id = os.path.basename(
+                    os.path.normpath(model_checkpoint_path)
+                )
+                self.model = load_trusted_dit_model(
                     model_checkpoint_path,
-                    trust_remote_code=True,
+                    model_id=model_id,
                     attn_implementation=candidate,
                     dtype=self.dtype,
                 )

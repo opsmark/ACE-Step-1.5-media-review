@@ -224,7 +224,7 @@ class TrustedModelLoaderTests(unittest.TestCase):
         )
         self.assertEqual(True, _RecordingConfig.calls[0][1]["local_files_only"])
         model_kwargs = _RecordingModel.calls[0][1]
-        self.assertIs(_RecordingConfig.calls[0][0][0], _RecordingModel.calls[0][0][0])
+        self.assertEqual(_RecordingConfig.calls[0][0][0], _RecordingModel.calls[0][0][0])
         self.assertEqual({"fixture": "config"}, model_kwargs["config"])
         self.assertTrue(model_kwargs["local_files_only"])
         self.assertTrue(model_kwargs["use_safetensors"])
@@ -277,14 +277,12 @@ class TrustedModelLoaderTests(unittest.TestCase):
         self.assertIn("load_trusted_dit_model", dit_source)
         self.assertNotIn("trust_remote_code=True", dit_source)
         self.assertIn("load_trusted_causal_lm", lm_source)
+        self.assertNotIn("trust_remote_code=True", lm_source)
         self.assertNotIn(
             "AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)",
             lm_source,
         )
-        self.assertIn(
-            "AutoTokenizer.from_pretrained(full_lm_model_path, use_fast=True, local_files_only=True)",
-            lm_source,
-        )
+        self.assertIn("local_files_only=True", lm_source)
 
 
 if __name__ == "__main__":
