@@ -20,24 +20,30 @@ def set_api_key(key: Optional[str]) -> None:
     _api_key = key
 
 
+def _authorization_token(authorization: Optional[str]) -> Optional[str]:
+    if not authorization:
+        return None
+    return authorization[7:] if authorization.startswith("Bearer ") else authorization
+
+
 def verify_token_from_request(
     body: dict[str, Any], authorization: Optional[str] = None
 ) -> Optional[str]:
-    """Validate request auth from body ``ai_token`` or Authorization header.
+    """Validate legacy body/header authentication.
 
-    Args:
-        body: Parsed request payload dictionary.
-        authorization: Optional ``Authorization`` header value.
-
-    Returns:
-        Validated token value, or ``None`` when auth is disabled.
-
-    Raises:
-        HTTPException: If auth is required and token is missing/invalid.
+    Authorization headers take precedence. This lets pre-body middleware
+    authenticate a request without a stale or attacker-supplied ``ai_token`` in
+    the subsequently parsed body overriding an already valid header.
     """
 
     if _api_key is None:
         return None
+
+    header_token = _authorization_token(authorization)
+    if header_token is not None:
+        if header_token == _api_key:
+            return header_token
+        raise HTTPException(status_code=401, detail="Invalid API key")
 
     ai_token = body.get("ai_token") if body else None
     if ai_token:
@@ -45,31 +51,17 @@ def verify_token_from_request(
             return ai_token
         raise HTTPException(status_code=401, detail="Invalid ai_token")
 
-    if authorization:
-        token = authorization[7:] if authorization.startswith("Bearer ") else authorization
-        if token == _api_key:
-            return token
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
     raise HTTPException(status_code=401, detail="Missing ai_token or Authorization header")
 
 
 async def verify_api_key(authorization: Optional[str] = Header(None)) -> None:
-    """Validate Authorization header for endpoints that do not parse request body.
-
-    Args:
-        authorization: Optional ``Authorization`` header value.
-
-    Raises:
-        HTTPException: If auth is required and header token is missing/invalid.
-    """
+    """Validate Authorization header before protected endpoint processing."""
 
     if _api_key is None:
         return
 
-    if not authorization:
+    token = _authorization_token(authorization)
+    if token is None:
         raise HTTPException(status_code=401, detail="Missing Authorization header")
-
-    token = authorization[7:] if authorization.startswith("Bearer ") else authorization
     if token != _api_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
