@@ -44,6 +44,19 @@ def stop_tensorboard(app: Any) -> None:
         pass
 
 
+def _tensorboard_loopback_host() -> str:
+    """Return a loopback-only TensorBoard host or reject the configuration."""
+
+    host = os.getenv("TENSORBOARD_HOST", "127.0.0.1").strip().lower()
+    if host not in {"127.0.0.1", "::1", "localhost"}:
+        raise ValueError(
+            "TensorBoard must bind to loopback. Use an authenticated reverse "
+            "proxy or tunnel for remote access instead of TENSORBOARD_HOST="
+            f"{host!r}."
+        )
+    return host
+
+
 def start_tensorboard(
     app: Any,
     logdir: str,
@@ -53,6 +66,7 @@ def start_tensorboard(
 
     try:
         tensorboard_port = int(os.getenv("TENSORBOARD_PORT", "6006"))
+        tensorboard_host = _tensorboard_loopback_host()
         stop_tensorboard_fn(app)
 
         if sys.prefix != sys.base_prefix:
@@ -71,12 +85,14 @@ def start_tensorboard(
                 logdir,
                 "--port",
                 str(tensorboard_port),
-                "--bind_all",
+                "--host",
+                tensorboard_host,
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        return f"http://localhost:{tensorboard_port}"
+        display_host = f"[{tensorboard_host}]" if ":" in tensorboard_host else tensorboard_host
+        return f"http://{display_host}:{tensorboard_port}"
     except Exception:
         return None
 
