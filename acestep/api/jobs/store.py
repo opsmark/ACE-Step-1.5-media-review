@@ -90,6 +90,19 @@ class _JobStore:
             self._jobs[job_id] = record
         return record
 
+    def discard_unsubmitted(self, record: _JobRecord) -> bool:
+        """Undo a failed admission; never remove a replacement or running job.
+
+        The caller must establish that enqueue failed on its event loop.
+        This method does not inspect the external queue or cancel queued work.
+        """
+        with self._lock:
+            current = self._jobs.get(record.job_id)
+            if current is not record or current.status != "queued":
+                return False
+            del self._jobs[record.job_id]
+            return True
+
     def create_with_id(self, job_id: str, env: str = "development") -> _JobRecord:
         """Create and register a queued job using a caller-provided ID."""
         now = time.time()
