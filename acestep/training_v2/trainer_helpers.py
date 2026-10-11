@@ -24,6 +24,10 @@ from acestep.training.lokr_utils import (
     save_lokr_weights,
     load_lokr_weights,
 )
+from acestep.training_v2.training_state_safety import (
+    TrainingStateError,
+    load_data_only_training_state,
+)
 from acestep.training_v2.ui import TrainingUpdate
 
 logger = logging.getLogger(__name__)
@@ -334,13 +338,25 @@ def resume_checkpoint(
                 "-- loading as LoKR anyway",
                 trainer.adapter_type,
             )
-        load_lokr_weights(module.lycoris_net, str(lokr_weights_path))
         if state_path.exists():
-            state = torch.load(
-                str(state_path), map_location=module.device, weights_only=False
-            )
-            epoch = state.get("epoch", 0)
-            step = state.get("global_step", 0)
+            try:
+                state = load_data_only_training_state(
+                    str(state_path),
+                    map_location=module.device,
+                )
+            except TrainingStateError as exc:
+                yield TrainingUpdate(
+                    0,
+                    0.0,
+                    "[WARN] Refused LoKR training state before loading adapter weights: "
+                    f"{exc}",
+                    kind="warn",
+                )
+                return None
+
+            load_lokr_weights(module.lycoris_net, str(lokr_weights_path))
+            epoch = state["epoch"]
+            step = state["global_step"]
             if "optimizer_state_dict" in state:
                 optimizer.load_state_dict(state["optimizer_state_dict"])
             if "scheduler_state_dict" in state:
@@ -352,6 +368,8 @@ def resume_checkpoint(
                 kind="info",
             )
             return (epoch, step)
+
+        load_lokr_weights(module.lycoris_net, str(lokr_weights_path))
         yield TrainingUpdate(
             0, 0.0, "[OK] LoKR weights loaded (no training state)", kind="info"
         )
