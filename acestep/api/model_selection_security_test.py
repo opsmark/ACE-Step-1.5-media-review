@@ -12,8 +12,10 @@ from unittest.mock import MagicMock, patch
 from acestep.api import model_download
 from acestep.api.http.model_init_service import initialize_models_for_request
 from acestep.api.model_registry import (
+    BUILTIN_LOCAL_MODEL_IDS,
     MODEL_REPO_MAPPING,
     ModelSelectionError,
+    approved_dit_model_ids,
     approved_model_ids,
     normalize_model_identifier,
     resolve_model_directory,
@@ -30,6 +32,26 @@ class ModelRegistryTests(TestCase):
                 allowed_ids=approved_model_ids(),
             ),
         )
+
+    def test_complete_maintained_remote_and_local_variant_sets_are_retained(self) -> None:
+        expected_remote = {
+            "acestep-v15-turbo",
+            "acestep-5Hz-lm-1.7B",
+            "vae",
+            "Qwen3-Embedding-0.6B",
+            "acestep-5Hz-lm-0.6B",
+            "acestep-5Hz-lm-4B",
+            "acestep-v15-base",
+            "acestep-v15-sft",
+            "acestep-v15-turbo-shift1",
+            "acestep-v15-turbo-shift3",
+            "acestep-v15-turbo-continuous",
+            "acestep-v15-xl-base",
+            "acestep-v15-xl-sft",
+            "acestep-v15-xl-turbo",
+        }
+        self.assertEqual(expected_remote, set(MODEL_REPO_MAPPING))
+        self.assertTrue(BUILTIN_LOCAL_MODEL_IDS <= approved_dit_model_ids())
 
     def test_paths_control_characters_and_unknown_names_are_rejected(self) -> None:
         cases = [
@@ -119,6 +141,27 @@ class ModelDownloadTests(TestCase):
                     )
                     huggingface.assert_not_called()
                     modelscope.assert_not_called()
+
+    def test_builtin_local_variant_must_exist_and_never_uses_default_repo(self) -> None:
+        model_id = "acestep-v15-turbo-rl"
+        with tempfile.TemporaryDirectory() as root, patch.object(
+            model_download,
+            "download_from_huggingface",
+        ) as huggingface, patch.object(
+            model_download,
+            "download_from_modelscope",
+        ) as modelscope:
+            with self.assertRaises(ModelSelectionError):
+                model_download.ensure_model_downloaded(model_id, root)
+            model_dir = Path(root) / model_id
+            model_dir.mkdir()
+            (model_dir / "config.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(
+                os.path.normcase(os.path.realpath(model_dir)),
+                model_download.ensure_model_downloaded(model_id, root),
+            )
+            huggingface.assert_not_called()
+            modelscope.assert_not_called()
 
     def test_provider_result_is_re_resolved_and_must_be_nonempty(self) -> None:
         with tempfile.TemporaryDirectory() as root:
