@@ -4,20 +4,14 @@ from __future__ import annotations
 
 import os
 
-
-MODEL_REPO_MAPPING = {
-    "acestep-v15-turbo": "ACE-Step/Ace-Step1.5",
-    "acestep-5Hz-lm-1.7B": "ACE-Step/Ace-Step1.5",
-    "vae": "ACE-Step/Ace-Step1.5",
-    "Qwen3-Embedding-0.6B": "ACE-Step/Ace-Step1.5",
-    "acestep-5Hz-lm-0.6B": "ACE-Step/acestep-5Hz-lm-0.6B",
-    "acestep-5Hz-lm-4B": "ACE-Step/acestep-5Hz-lm-4B",
-    "acestep-v15-base": "ACE-Step/acestep-v15-base",
-    "acestep-v15-sft": "ACE-Step/acestep-v15-sft",
-    "acestep-v15-turbo-shift3": "ACE-Step/acestep-v15-turbo-shift3",
-}
-
-DEFAULT_REPO_ID = "ACE-Step/Ace-Step1.5"
+from acestep.api.model_registry import (
+    DEFAULT_REPO_ID,
+    MODEL_REPO_MAPPING,
+    ModelSelectionError,
+    approved_model_ids,
+    normalize_model_identifier,
+    resolve_model_directory,
+)
 
 
 def can_access_google(timeout: float = 3.0) -> bool:
@@ -92,18 +86,45 @@ def download_from_modelscope(repo_id: str, local_dir: str, model_name: str) -> s
     return os.path.join(local_dir, model_name)
 
 
+def _existing_nonempty_directory(path: str) -> bool:
+    return os.path.isdir(path) and bool(os.listdir(path))
+
+
 def ensure_model_downloaded(model_name: str, checkpoint_dir: str) -> str:
-    """Ensure model exists locally, downloading from configured source if missing."""
+    """Ensure one registry-approved model exists beneath ``checkpoint_dir``.
 
-    model_path = os.path.join(checkpoint_dir, model_name)
+    Built-in identifiers may use their pinned repository mapping. Extra IDs
+    configured through ``ACESTEP_LOCAL_MODEL_IDS`` must already exist locally;
+    they never inherit the historical default remote repository.
+    """
 
-    if os.path.exists(model_path) and os.listdir(model_path):
-        print(f"[Model Download] Model {model_name} already exists at {model_path}")
+    allowed = approved_model_ids()
+    model_id = normalize_model_identifier(
+        model_name,
+        allowed_ids=allowed,
+        field_name="model",
+    )
+    model_path = resolve_model_directory(
+        checkpoint_dir,
+        model_id,
+        allowed_ids=allowed,
+    )
+
+    if _existing_nonempty_directory(model_path):
+        print(f"[Model Download] Model {model_id} already exists at {model_path}")
         return model_path
+    if os.path.lexists(model_path):
+        raise ModelSelectionError(
+            f"Model destination is not a non-empty directory: {model_path}"
+        )
 
-    repo_id = MODEL_REPO_MAPPING.get(model_name, DEFAULT_REPO_ID)
-    print(f"[Model Download] Model {model_name} not found, checking network...")
+    repo_id = MODEL_REPO_MAPPING.get(model_id)
+    if repo_id is None:
+        raise ModelSelectionError(
+            f"Local-only model {model_id!r} is configured but not present at {model_path}"
+        )
 
+    print(f"[Model Download] Model {model_id} not found, checking network...")
     prefer_source = os.environ.get("ACESTEP_DOWNLOAD_SOURCE", "").lower()
     if prefer_source == "huggingface":
         use_huggingface = True
@@ -118,16 +139,29 @@ def ensure_model_downloaded(model_name: str, checkpoint_dir: str) -> str:
     if use_huggingface:
         print("[Model Download] Using HuggingFace Hub...")
         try:
-            return download_from_huggingface(repo_id, checkpoint_dir, model_name)
+            download_from_huggingface(repo_id, checkpoint_dir, model_id)
         except Exception as exc:
             print(f"[Model Download] HuggingFace download failed: {exc}")
             print("[Model Download] Falling back to ModelScope...")
-            return download_from_modelscope(repo_id, checkpoint_dir, model_name)
+            download_from_modelscope(repo_id, checkpoint_dir, model_id)
+    else:
+        print("[Model Download] Using ModelScope...")
+        try:
+            download_from_modelscope(repo_id, checkpoint_dir, model_id)
+        except Exception as exc:
+            print(f"[Model Download] ModelScope download failed: {exc}")
+            print("[Model Download] Trying HuggingFace as fallback...")
+            download_from_huggingface(repo_id, checkpoint_dir, model_id)
 
-    print("[Model Download] Using ModelScope...")
-    try:
-        return download_from_modelscope(repo_id, checkpoint_dir, model_name)
-    except Exception as exc:
-        print(f"[Model Download] ModelScope download failed: {exc}")
-        print("[Model Download] Trying HuggingFace as fallback...")
-        return download_from_huggingface(repo_id, checkpoint_dir, model_name)
+    # Re-resolve after the provider writes files so newly introduced links or
+    # path substitutions cannot escape the checkpoint root.
+    resolved = resolve_model_directory(
+        checkpoint_dir,
+        model_id,
+        allowed_ids=allowed,
+    )
+    if not _existing_nonempty_directory(resolved):
+        raise RuntimeError(
+            f"Model download completed without a non-empty model directory: {resolved}"
+        )
+    return resolved
