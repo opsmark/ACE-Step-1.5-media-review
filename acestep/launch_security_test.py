@@ -18,6 +18,7 @@ from acestep.secure_gradio_entrypoint import (
     main as gradio_main,
     prepare_gradio_arguments,
 )
+from openrouter import _apply_direct_module_guard, _direct_server_arguments
 from openrouter.secure_server import main as openrouter_main
 
 
@@ -158,3 +159,69 @@ class OpenRouterEntrypointTests(TestCase):
             )
             self.assertNotIn("OPENROUTER_API_KEY", os.environ)
         runner.assert_called_once()
+
+
+class DirectModuleGuardTests(TestCase):
+    def test_only_historical_server_module_is_intercepted(self) -> None:
+        self.assertEqual(
+            ["--host", "0.0.0.0"],
+            _direct_server_arguments(
+                [
+                    "python",
+                    "-m",
+                    "openrouter.openrouter_api_server",
+                    "--host",
+                    "0.0.0.0",
+                ]
+            ),
+        )
+        self.assertIsNone(
+            _direct_server_arguments(
+                ["python", "-m", "openrouter.secure_server", "--host", "0.0.0.0"]
+            )
+        )
+
+    def test_direct_remote_module_without_key_is_rejected_before_import(self) -> None:
+        with self.assertRaises(ExposurePolicyError):
+            _apply_direct_module_guard(
+                [
+                    "python",
+                    "-m",
+                    "openrouter.openrouter_api_server",
+                    "--host",
+                    "0.0.0.0",
+                ],
+                {},
+            )
+
+    def test_direct_remote_module_publishes_key_before_import(self) -> None:
+        environment: dict[str, str] = {}
+        _apply_direct_module_guard(
+            [
+                "python",
+                "-m",
+                "openrouter.openrouter_api_server",
+                "--host",
+                "0.0.0.0",
+                "--api-key",
+                " secret ",
+            ],
+            environment,
+        )
+        self.assertEqual("secret", environment["OPENROUTER_API_KEY"])
+
+    def test_direct_loopback_empty_key_clears_stale_environment(self) -> None:
+        environment = {"OPENROUTER_API_KEY": "stale"}
+        _apply_direct_module_guard(
+            [
+                "python",
+                "-m",
+                "openrouter.openrouter_api_server",
+                "--host",
+                "127.0.0.1",
+                "--api-key",
+                "",
+            ],
+            environment,
+        )
+        self.assertNotIn("OPENROUTER_API_KEY", environment)
