@@ -54,8 +54,14 @@ class StartLoKRTrainingRequest(BaseModel):
 class ExportLoRARequest(BaseModel):
     """Request payload for exporting trained adapters."""
 
-    export_path: str = Field(..., description="Export destination path")
-    lora_output_dir: str = Field(..., description="Training output directory")
+    export_path: str = Field(
+        ...,
+        description="New export destination beneath ACESTEP_TRAINING_EXPORT_ROOT; existing paths are refused",
+    )
+    lora_output_dir: str = Field(
+        ...,
+        description="Training output beneath ACESTEP_TRAINING_OUTPUT_ROOT",
+    )
 
 
 @dataclass
@@ -129,10 +135,4 @@ def initialize_training_state(app: FastAPI) -> None:
         "config": {},
     }
     for key, value in defaults.items():
-        if key not in state:
-            if isinstance(value, list):
-                state[key] = []
-            elif isinstance(value, dict):
-                state[key] = {}
-            else:
-                state[key] = value
+        state.setdefault(key, value)
