@@ -81,6 +81,7 @@ jobs:
                               model_path,
                               torch_dtype=self.dtype,
                           )''',
+              expected=2,
           )
           replace_exact(
               llm,
