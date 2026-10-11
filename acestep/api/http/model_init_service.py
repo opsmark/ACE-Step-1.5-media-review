@@ -5,6 +5,11 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Dict, Optional
 
+from acestep.api.model_registry import (
+    approved_dit_model_ids,
+    approved_lm_model_ids,
+    normalize_model_identifier,
+)
 from acestep.gpu_config import (
     VRAM_AUTO_OFFLOAD_THRESHOLD_GB,
     get_gpu_config,
@@ -52,6 +57,33 @@ def _resolve_slot(
     )
 
 
+def _registered_name(
+    raw_value: Optional[str],
+    *,
+    fallback_value: str,
+    get_model_name: Callable[[str], str],
+    allowed_ids,
+    field_name: str,
+) -> str:
+    explicit = str(raw_value or "").strip()
+    if explicit:
+        # Caller-supplied API values are validated exactly as received. Do not
+        # basename an absolute/traversing path into an apparently valid model ID.
+        identifier = explicit
+    else:
+        selected = str(fallback_value or "").strip()
+        if not selected:
+            raise RuntimeError(f"No {field_name} specified")
+        # Existing startup state may retain an absolute path from an older build.
+        # A fallback may reuse only its final registered identifier.
+        identifier = get_model_name(selected) or selected
+    return normalize_model_identifier(
+        identifier,
+        allowed_ids=allowed_ids,
+        field_name=field_name,
+    )
+
+
 def initialize_models_for_request(
     app_state: Any,
     model_name: Optional[str],
@@ -63,25 +95,7 @@ def initialize_models_for_request(
     env_bool: Callable[[str, bool], bool],
     slot: Optional[int] = None,
 ) -> Dict[str, Optional[str]]:
-    """Initialize DiT and optional LM models.
-
-    Args:
-        app_state: FastAPI application state carrying handler objects and flags.
-        model_name: Requested DiT model name, or current configured model when empty.
-        init_llm: Whether to initialize the LM in the same request.
-        requested_lm_model_path: Optional LM model path/name override.
-        get_project_root: Returns the project root path.
-        get_model_name: Normalizes a model path to its model name.
-        ensure_model_downloaded: Ensures a named model exists under checkpoints.
-        env_bool: Reads boolean environment variables.
-        slot: Handler slot to initialize (1, 2, or 3).  Defaults to 1.
-    Returns:
-        Mapping with keys ``slot``, ``loaded_model`` and ``loaded_lm_model``.
-    Raises:
-        RuntimeError: When model names are invalid, slot is unavailable, or
-            DiT/LLM initialization fails.
-        AttributeError: When required app state attributes are missing (legacy behavior).
-    """
+    """Initialize API-selected DiT/LM models from registered identifiers only."""
 
     resolved_slot = slot or 1
     handler, config_attr, init_attr, error_attr, current_config = _resolve_slot(
@@ -93,14 +107,25 @@ def initialize_models_for_request(
     checkpoint_dir = os.path.join(project_root, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    target_model = (model_name or get_model_name(current_config)).strip()
-    if not target_model:
-        raise RuntimeError("No DiT model specified")
+    target_model = _registered_name(
+        model_name,
+        fallback_value=get_model_name(current_config),
+        get_model_name=get_model_name,
+        allowed_ids=approved_dit_model_ids(),
+        field_name="DiT model",
+    )
 
     gpu_config = get_gpu_config()
-    auto_offload = gpu_config.gpu_memory_gb > 0 and gpu_config.gpu_memory_gb < VRAM_AUTO_OFFLOAD_THRESHOLD_GB
+    auto_offload = (
+        gpu_config.gpu_memory_gb > 0
+        and gpu_config.gpu_memory_gb < VRAM_AUTO_OFFLOAD_THRESHOLD_GB
+    )
     offload_to_cpu_env = os.getenv("ACESTEP_OFFLOAD_TO_CPU")
-    offload_to_cpu = env_bool("ACESTEP_OFFLOAD_TO_CPU", False) if offload_to_cpu_env is not None else auto_offload
+    offload_to_cpu = (
+        env_bool("ACESTEP_OFFLOAD_TO_CPU", False)
+        if offload_to_cpu_env is not None
+        else auto_offload
+    )
     use_flash_attention = env_bool("ACESTEP_USE_FLASH_ATTENTION", True)
     offload_dit_to_cpu = env_bool("ACESTEP_OFFLOAD_DIT_TO_CPU", False)
     compile_model = env_bool("ACESTEP_COMPILE_MODEL", False)
@@ -128,26 +153,37 @@ def initialize_models_for_request(
 
     loaded_lm_model: Optional[str] = None
     if init_llm:
-        lm_model_path = (requested_lm_model_path or os.getenv("ACESTEP_LM_MODEL_PATH", "acestep-5Hz-lm-0.6B")).strip()
-        if not lm_model_path:
-            lm_model_path = "acestep-5Hz-lm-0.6B"
+        lm_model_id = _registered_name(
+            requested_lm_model_path,
+            fallback_value=os.getenv(
+                "ACESTEP_LM_MODEL_PATH",
+                "acestep-5Hz-lm-0.6B",
+            ),
+            get_model_name=get_model_name,
+            allowed_ids=approved_lm_model_ids(),
+            field_name="LM model",
+        )
 
+        # Publish only the normalized identifier after validation. Invalid
+        # caller input cannot poison later lazy-load or restore state.
         os.environ["ACESTEP_INIT_LLM"] = "true"
-        os.environ["ACESTEP_LM_MODEL_PATH"] = lm_model_path
+        os.environ["ACESTEP_LM_MODEL_PATH"] = lm_model_id
 
         lm_backend = resolve_lm_backend(os.getenv("ACESTEP_LM_BACKEND"), gpu_config)
         lm_device = os.getenv("ACESTEP_LM_DEVICE", device)
         lm_offload_env = os.getenv("ACESTEP_LM_OFFLOAD_TO_CPU")
-        lm_offload = env_bool("ACESTEP_LM_OFFLOAD_TO_CPU", False) if lm_offload_env is not None else offload_to_cpu
+        lm_offload = (
+            env_bool("ACESTEP_LM_OFFLOAD_TO_CPU", False)
+            if lm_offload_env is not None
+            else offload_to_cpu
+        )
 
-        lm_model_name = get_model_name(lm_model_path)
-        if lm_model_name:
-            ensure_model_downloaded(lm_model_name, checkpoint_dir)
+        ensure_model_downloaded(lm_model_id, checkpoint_dir)
 
         with app_state._llm_init_lock:
             llm_status, llm_ok = llm.initialize(
                 checkpoint_dir=checkpoint_dir,
-                lm_model_path=lm_model_path,
+                lm_model_path=lm_model_id,
                 backend=lm_backend,
                 device=lm_device,
                 offload_to_cpu=lm_offload,
@@ -160,6 +196,10 @@ def initialize_models_for_request(
             app_state._llm_initialized = True
             app_state._llm_init_error = None
             app_state._llm_lazy_load_disabled = False
-        loaded_lm_model = lm_model_name or lm_model_path
+        loaded_lm_model = lm_model_id
 
-    return {"slot": resolved_slot, "loaded_model": target_model, "loaded_lm_model": loaded_lm_model}
+    return {
+        "slot": resolved_slot,
+        "loaded_model": target_model,
+        "loaded_lm_model": loaded_lm_model,
+    }
