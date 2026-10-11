@@ -128,7 +128,7 @@ class TrainingExportServiceTests(unittest.TestCase):
             self.call()
         self.assertFalse((self.export_root / "release-1").exists())
 
-    def test_source_destination_overlap_is_rejected(self) -> None:
+    def test_source_destination_overlap_is_rejected_without_mutation(self) -> None:
         source = self.make_final()
         nested_export_root = source / "exports"
         with self.assertRaises(TrainingExportConflict):
@@ -138,6 +138,7 @@ class TrainingExportServiceTests(unittest.TestCase):
                 source_root=str(self.source_root),
                 export_root=str(nested_export_root),
             )
+        self.assertFalse(nested_export_root.exists())
 
 
 if __name__ == "__main__":
