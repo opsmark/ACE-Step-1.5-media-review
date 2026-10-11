@@ -6,17 +6,42 @@ import os
 import re
 from collections.abc import Iterable
 
+# Remote repositories already declared by the maintained model downloader.
+# Keeping the complete built-in set here avoids silently rejecting supported
+# model variants merely because the older API helper carried a shorter table.
 MODEL_REPO_MAPPING = {
+    # Main unified repository components
     "acestep-v15-turbo": "ACE-Step/Ace-Step1.5",
     "acestep-5Hz-lm-1.7B": "ACE-Step/Ace-Step1.5",
     "vae": "ACE-Step/Ace-Step1.5",
     "Qwen3-Embedding-0.6B": "ACE-Step/Ace-Step1.5",
+    # Separate LM repositories
     "acestep-5Hz-lm-0.6B": "ACE-Step/acestep-5Hz-lm-0.6B",
     "acestep-5Hz-lm-4B": "ACE-Step/acestep-5Hz-lm-4B",
+    # Separate DiT repositories
     "acestep-v15-base": "ACE-Step/acestep-v15-base",
     "acestep-v15-sft": "ACE-Step/acestep-v15-sft",
+    "acestep-v15-turbo-shift1": "ACE-Step/acestep-v15-turbo-shift1",
     "acestep-v15-turbo-shift3": "ACE-Step/acestep-v15-turbo-shift3",
+    "acestep-v15-turbo-continuous": "ACE-Step/acestep-v15-turbo-continuous",
+    "acestep-v15-xl-base": "ACE-Step/acestep-v15-xl-base",
+    "acestep-v15-xl-sft": "ACE-Step/acestep-v15-xl-sft",
+    "acestep-v15-xl-turbo": "ACE-Step/acestep-v15-xl-turbo",
 }
+
+# The maintained handler knows how to synchronize repository-owned code for
+# these additional variants, but the existing downloader does not declare a
+# remote repository for them. They may be selected only when already present
+# beneath the checkpoint root; they never inherit a default remote repository.
+BUILTIN_LOCAL_MODEL_IDS = frozenset(
+    {
+        "acestep-v15-base-sft-fix-inst",
+        "acestep-v15-turbo-fix-inst-shift3",
+        "acestep-v15-turbo-fix-inst-shift-continuous",
+        "acestep-v15-turbo-fix-inst-shift-dynamic",
+        "acestep-v15-turbo-rl",
+    }
+)
 
 DEFAULT_REPO_ID = "ACE-Step/Ace-Step1.5"
 _MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -43,9 +68,13 @@ def _configured_local_model_ids() -> frozenset[str]:
 
 
 def approved_model_ids() -> frozenset[str]:
-    """Return built-in model IDs plus administrator-approved local-only IDs."""
+    """Return remote, built-in-local and administrator-approved model IDs."""
 
-    return frozenset(MODEL_REPO_MAPPING) | _configured_local_model_ids()
+    return (
+        frozenset(MODEL_REPO_MAPPING)
+        | BUILTIN_LOCAL_MODEL_IDS
+        | _configured_local_model_ids()
+    )
 
 
 def approved_dit_model_ids() -> frozenset[str]:
