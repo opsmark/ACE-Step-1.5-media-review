@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
@@ -79,7 +78,9 @@ def _read_config(checkpoint: Path) -> tuple[Path, dict[str, Any]]:
     try:
         payload = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ModelCodePolicyError(f"Checkpoint config is not valid UTF-8 JSON: {exc}") from exc
+        raise ModelCodePolicyError(
+            f"Checkpoint config is not valid UTF-8 JSON: {exc}"
+        ) from exc
     if not isinstance(payload, dict):
         raise ModelCodePolicyError("Checkpoint config must be a JSON object")
     return config_path, payload
@@ -92,7 +93,8 @@ def _safetensor_files(checkpoint: Path) -> tuple[str, ...]:
         files.append(str(path))
     if not files:
         raise ModelCodePolicyError(
-            "Checkpoint has no top-level safetensors weights; pickle-capable weight fallback is refused"
+            "Checkpoint has no top-level safetensors weights; pickle-capable "
+            "weight fallback is refused"
         )
     return tuple(files)
 
@@ -114,16 +116,23 @@ def inspect_dit_checkpoint(
 
     variant = TRUSTED_DIT_VARIANTS.get(model_id)
     if variant is None:
-        raise ModelCodePolicyError(f"No repository-owned implementation for {model_id!r}")
+        raise ModelCodePolicyError(
+            f"No repository-owned implementation for {model_id!r}"
+        )
 
     checkpoint = Path(checkpoint_path)
     if checkpoint.is_symlink():
-        raise ModelCodePolicyError(f"Checkpoint directory must not be a symlink: {checkpoint}")
+        raise ModelCodePolicyError(
+            f"Checkpoint directory must not be a symlink: {checkpoint}"
+        )
     if not checkpoint.is_dir():
-        raise ModelCodePolicyError(f"Checkpoint directory does not exist: {checkpoint}")
+        raise ModelCodePolicyError(
+            f"Checkpoint directory does not exist: {checkpoint}"
+        )
     if checkpoint.name != model_id:
         raise ModelCodePolicyError(
-            f"Checkpoint directory name {checkpoint.name!r} does not match model ID {model_id!r}"
+            f"Checkpoint directory name {checkpoint.name!r} does not match "
+            f"model ID {model_id!r}"
         )
 
     config_path, payload = _read_config(checkpoint)
@@ -131,7 +140,8 @@ def inspect_dit_checkpoint(
     if auto_map is not None:
         if not isinstance(auto_map, dict) or auto_map != _expected_auto_map(variant):
             raise ModelCodePolicyError(
-                "Checkpoint auto_map does not match the repository-owned implementation contract"
+                "Checkpoint auto_map does not match the repository-owned "
+                "implementation contract"
             )
 
     architectures = payload.get("architectures")
@@ -151,18 +161,25 @@ def inspect_dit_checkpoint(
     )
 
 
-def inspect_causal_lm_checkpoint(checkpoint_path: str) -> tuple[str, tuple[str, ...]]:
+def inspect_causal_lm_checkpoint(
+    checkpoint_path: str,
+) -> tuple[str, tuple[str, ...]]:
     """Reject any LM checkpoint that advertises executable custom code."""
 
     checkpoint = Path(checkpoint_path)
     if checkpoint.is_symlink():
-        raise ModelCodePolicyError(f"LM checkpoint directory must not be a symlink: {checkpoint}")
+        raise ModelCodePolicyError(
+            f"LM checkpoint directory must not be a symlink: {checkpoint}"
+        )
     if not checkpoint.is_dir():
-        raise ModelCodePolicyError(f"LM checkpoint directory does not exist: {checkpoint}")
+        raise ModelCodePolicyError(
+            f"LM checkpoint directory does not exist: {checkpoint}"
+        )
     config_path, payload = _read_config(checkpoint)
     if payload.get("auto_map"):
         raise ModelCodePolicyError(
-            "LM checkpoint advertises custom code through auto_map; only standard Transformers classes are allowed"
+            "LM checkpoint advertises custom code through auto_map; only "
+            "standard Transformers classes are allowed"
         )
     return str(config_path), _safetensor_files(checkpoint)
 
@@ -203,6 +220,7 @@ def load_trusted_dit_model(
 def load_trusted_causal_lm(
     checkpoint_path: str,
     *,
+    torch_dtype: Any = None,
     auto_model_class: Optional[Any] = None,
 ) -> Any:
     """Load a standard causal LM locally with custom code and pickle fallback off."""
@@ -212,9 +230,11 @@ def load_trusted_causal_lm(
         from transformers import AutoModelForCausalLM
 
         auto_model_class = AutoModelForCausalLM
-    return auto_model_class.from_pretrained(
-        checkpoint_path,
-        trust_remote_code=False,
-        local_files_only=True,
-        use_safetensors=True,
-    )
+    kwargs: dict[str, Any] = {
+        "trust_remote_code": False,
+        "local_files_only": True,
+        "use_safetensors": True,
+    }
+    if torch_dtype is not None:
+        kwargs["torch_dtype"] = torch_dtype
+    return auto_model_class.from_pretrained(checkpoint_path, **kwargs)
