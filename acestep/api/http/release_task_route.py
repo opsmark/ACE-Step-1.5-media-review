@@ -63,23 +63,41 @@ def register_release_task_route(
             lm_default_top_p=lm_default_top_p,
         )
 
-        record = store.create()
         queue_ref: asyncio.Queue = app.state.job_queue
-        if queue_ref.full():
-            for temp_path in temp_files:
-                try:
-                    os.remove(temp_path)
-                except Exception:
-                    pass
-            raise HTTPException(status_code=429, detail="Server busy: queue is full")
+        admitted = False
+        try:
+            # Acquire metadata locks BEFORE publishing any job. There is no await
+            # from the capacity check through enqueue on this event loop.
+            async with app.state.pending_lock:
+                async with app.state.job_temp_files_lock:
+                    if queue_ref.full():
+                        raise HTTPException(status_code=429, detail="Server busy: queue is full")
 
-        if temp_files:
-            async with app.state.job_temp_files_lock:
-                app.state.job_temp_files[record.job_id] = temp_files
+                    record = store.create()
+                    try:
+                        if temp_files:
+                            app.state.job_temp_files[record.job_id] = temp_files
+                        app.state.pending_ids.append(record.job_id)
+                        position = len(app.state.pending_ids)
+                        queue_ref.put_nowait((record.job_id, req))
+                        admitted = True
+                    except BaseException as exc:
+                        # Enqueue did not succeed. Undo only this unpublished job.
+                        try:
+                            app.state.pending_ids.remove(record.job_id)
+                        except ValueError:
+                            pass
+                        app.state.job_temp_files.pop(record.job_id, None)
+                        store.discard_unsubmitted(record)
+                        if isinstance(exc, asyncio.QueueFull):
+                            raise HTTPException(status_code=429, detail="Server busy: queue is full") from exc
+                        raise
+        finally:
+            if not admitted:
+                for temp_path in temp_files:
+                    try:
+                        os.remove(temp_path)
+                    except Exception:
+                        pass
 
-        async with app.state.pending_lock:
-            app.state.pending_ids.append(record.job_id)
-            position = len(app.state.pending_ids)
-
-        await queue_ref.put((record.job_id, req))
         return wrap_response({"task_id": record.job_id, "status": "queued", "queue_position": position})
