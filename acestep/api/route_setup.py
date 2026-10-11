@@ -12,6 +12,7 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 from acestep.api.http.audio_route import register_audio_route
 from acestep.api.http.lora_routes import register_lora_routes
 from acestep.api.http.model_service_routes import register_model_service_routes
+from acestep.api.http.prebody_auth import install_prebody_auth_middleware
 from acestep.api.http.query_result_route import register_query_result_route
 from acestep.api.http.reinitialize_route import register_reinitialize_route
 from acestep.api.http.release_task_route import register_release_task_route
@@ -58,6 +59,11 @@ def configure_api_routes(
     create_sample: Callable[..., Any] = None,
 ) -> None:
     """Configure middleware, compatibility router, and all API route modules."""
+
+    # Install this gate before CORS so the subsequently added CORS middleware
+    # remains the outer response wrapper. The gate authenticates selected
+    # legacy body-parsing routes before JSON/form/multipart consumption.
+    install_prebody_auth_middleware(app, verify_api_key)
 
     app.add_middleware(
         CORSMiddleware,
