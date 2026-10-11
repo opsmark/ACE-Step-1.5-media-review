@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import MutableMapping, Sequence
 
 from acestep.network_exposure import validate_api_exposure
 
@@ -29,7 +29,7 @@ def _direct_server_arguments(orig_argv: Sequence[str]) -> list[str] | None:
 
 def _apply_direct_module_guard(
     orig_argv: Sequence[str] | None = None,
-    environ: Mapping[str, str] | None = None,
+    environ: MutableMapping[str, str] | None = None,
 ) -> None:
     """Validate/publish direct-module auth before the server module imports.
 
@@ -40,7 +40,7 @@ def _apply_direct_module_guard(
     and the new ``openrouter.secure_server`` entrypoint are unaffected.
     """
 
-    argv = sys.orig_argv if orig_argv is None else orig_argv
+    argv = getattr(sys, "orig_argv", sys.argv) if orig_argv is None else orig_argv
     module_args = _direct_server_arguments(argv)
     if module_args is None:
         return
@@ -59,12 +59,10 @@ def _apply_direct_module_guard(
     api_key = str(parsed.api_key or "").strip() or None
     validate_api_exposure(str(parsed.host), api_key, service="OpenRouter API")
 
-    # The production call always receives os.environ. MutableMapping is avoided
-    # in the public annotation only to keep the injectable test contract small.
     if api_key is not None:
-        os.environ["OPENROUTER_API_KEY"] = api_key
+        environment["OPENROUTER_API_KEY"] = api_key
     else:
-        os.environ.pop("OPENROUTER_API_KEY", None)
+        environment.pop("OPENROUTER_API_KEY", None)
 
 
 _apply_direct_module_guard()
