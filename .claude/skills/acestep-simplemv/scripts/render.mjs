@@ -21,10 +21,22 @@
  *   --background   Background image file path (if omitted, uses animated gradient)
  */
 
-import {execSync} from 'child_process';
-import {readFileSync, readdirSync, existsSync, copyFileSync, mkdirSync} from 'fs';
+import {
+  readFileSync,
+  readdirSync,
+  existsSync,
+  copyFileSync,
+  mkdirSync,
+  writeFileSync,
+  unlinkSync,
+} from 'fs';
 import {resolve, basename, isAbsolute, join} from 'path';
 import {homedir} from 'os';
+import {
+  getAudioDuration,
+  runRemotionRender,
+  validateCodec,
+} from './process-runner.mjs';
 
 /**
  * Resolve a file path that may be a MSYS2/Cygwin-style path on Windows.
@@ -173,18 +185,6 @@ function parseLrc(content) {
   return result;
 }
 
-function getAudioDuration(filePath) {
-  try {
-    const result = execSync(
-      `ffprobe -v error -show_entries format=duration -of csv=p=0 "${filePath}"`,
-      {encoding: 'utf-8'}
-    ).trim();
-    return parseFloat(result);
-  } catch {
-    return null;
-  }
-}
-
 function parseArgs(argv) {
   const args = {};
   for (let i = 2; i < argv.length; i++) {
@@ -306,10 +306,15 @@ const inputProps = {
 
 const output = args.output ? resolveFilePath(args.output) : 'out/video.mp4';
 const codec = args.codec || 'h264';
+try {
+  validateCodec(codec);
+} catch (error) {
+  console.error(`Error: ${error.message}`);
+  process.exit(1);
+}
 
 // Write props to temp file to avoid shell escaping issues
 const propsFile = resolve('.render-props.json');
-const {writeFileSync} = await import('fs');
 writeFileSync(propsFile, JSON.stringify(inputProps));
 
 // Find browser executable to avoid re-downloading
@@ -324,17 +329,6 @@ if (!browserExe) {
   console.warn('');
 }
 
-const cmd = [
-  'npx remotion render',
-  'MusicVideo',
-  `"${output}"`,
-  `--props="${propsFile}"`,
-  `--codec=${codec}`,
-  '--log=error',
-  browserExe ? `--browser-executable="${browserExe}"` : '',
-  chromeMode !== 'headless-shell' ? `--chrome-mode=${chromeMode}` : '',
-].filter(Boolean).join(' ');
-
 console.log(`\nRendering video...`);
 console.log(`  Audio: ${args.audio}`);
 console.log(`  Title: ${inputProps.title}`);
@@ -347,21 +341,31 @@ if (browserExe) console.log(`  Browser: ${browserExe}`);
 if (chromeMode !== 'headless-shell') console.log(`  Chrome mode: ${chromeMode}`);
 console.log('');
 
+let renderFailed = false;
 try {
-  const result = execSync(cmd, {encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe']});
+  const result = runRemotionRender({
+    output,
+    propsFile,
+    codec,
+    browserExe,
+    chromeMode,
+  });
   // Only show the final output file line (starts with '+') and size info
   const outputLines = result.split(/\r?\n/).filter(l => l.includes(output) || /^\+/.test(l.replace(/\x1b\[[0-9;]*m/g, '').trim()));
   if (outputLines.length) console.log(outputLines.join('\n'));
   console.log(`\n✅ Video rendered successfully: ${output}`);
-} catch (e) {
+} catch (error) {
   // Show stderr on failure for debugging
-  if (e.stderr) console.error(e.stderr.toString());
+  if (error.stderr) console.error(error.stderr.toString());
   console.error('\n❌ Render failed');
-  process.exit(1);
+  renderFailed = true;
 } finally {
   // Clean up temp props file
   try {
-    const {unlinkSync} = await import('fs');
     unlinkSync(propsFile);
   } catch {}
+}
+
+if (renderFailed) {
+  process.exit(1);
 }
