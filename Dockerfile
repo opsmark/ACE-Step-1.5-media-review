@@ -8,20 +8,26 @@
 # Build:
 #   docker build -t acestep .
 #
-# Run (Gradio UI — default):
+# Run (Gradio UI — host-loopback publication):
 #   docker run --gpus all -it --rm \
-#     -p 7860:7860 \
+#     -p 127.0.0.1:7860:7860 \
+#     -e ACESTEP_TRUST_PROXY_BOUNDARY=true \
+#     -e ACESTEP_PROXY_BIND_ADDRESS=127.0.0.1 \
 #     -v $(pwd)/checkpoints:/app/checkpoints \
 #     -v $(pwd)/gradio_outputs:/app/gradio_outputs \
 #     acestep
 #
-# Run (REST API server):
+# Run (REST API server — key required for the container-interface bind):
 #   docker run --gpus all -it --rm \
-#     -p 8001:8001 \
+#     -p 127.0.0.1:8001:8001 \
 #     -v $(pwd)/checkpoints:/app/checkpoints \
 #     -e ACESTEP_MODE=api \
+#     -e ACESTEP_API_KEY='replace-me' \
 #     acestep
 #
+# Publishing on a non-loopback host address requires deliberate UI credentials
+# and/or API keys. EXPOSE below documents container ports; it does not publish
+# them to the host.
 # =============================================================================
 
 # ==================== Build arguments ====================
@@ -74,7 +80,9 @@ RUN uv sync --frozen --no-dev --python python3.11
 RUN mkdir -p /app/checkpoints /app/gradio_outputs /app/output
 
 # ==================== Environment ====================
-# Bind to all interfaces for Docker port-mapping
+# Docker forwarding requires the process to listen on the container interface.
+# The secure launchers still require an API key or an explicitly declared
+# loopback-only host publication before accepting these internal binds.
 ENV GRADIO_SERVER_NAME=0.0.0.0
 ENV ACESTEP_API_HOST=0.0.0.0
 
@@ -134,14 +142,14 @@ if [ "${ACESTEP_INIT_SERVICE:-true}" = "true" ]; then
 fi
 
 if [ "${ACESTEP_MODE}" = "api" ]; then
-    echo "Starting REST API server on 0.0.0.0:${ACESTEP_API_PORT:-8001} ..."
+    echo "Starting REST API server on ${ACESTEP_API_HOST:-0.0.0.0}:${ACESTEP_API_PORT:-8001} ..."
     exec uv run python -m acestep.api_server \
         --host "${ACESTEP_API_HOST:-0.0.0.0}" \
         --port "${ACESTEP_API_PORT:-8001}" \
         ${ACESTEP_EXTRA_ARGS:-}
 else
-    echo "Starting Gradio UI on 0.0.0.0:${GRADIO_PORT:-7860} ..."
-    exec uv run python -m acestep.acestep_v15_pipeline \
+    echo "Starting Gradio UI on ${GRADIO_SERVER_NAME:-0.0.0.0}:${GRADIO_PORT:-7860} ..."
+    exec uv run python -m acestep.secure_gradio_entrypoint \
         --server-name "${GRADIO_SERVER_NAME:-0.0.0.0}" \
         --port "${GRADIO_PORT:-7860}" \
         --backend "${ACESTEP_LLM_BACKEND:-pt}" \
