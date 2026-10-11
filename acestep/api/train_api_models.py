@@ -135,4 +135,10 @@ def initialize_training_state(app: FastAPI) -> None:
         "config": {},
     }
     for key, value in defaults.items():
-        state.setdefault(key, value)
+        if key not in state:
+            if isinstance(value, list):
+                state[key] = []
+            elif isinstance(value, dict):
+                state[key] = {}
+            else:
+                state[key] = value
