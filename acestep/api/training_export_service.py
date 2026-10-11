@@ -146,7 +146,6 @@ def export_training_adapter(
         "ACESTEP_TRAINING_EXPORT_ROOT",
         os.path.join(get_safe_root(), "training_exports"),
     )
-    os.makedirs(configured_export_root, exist_ok=True)
 
     source_path = _select_source(lora_output_dir.strip(), configured_source_root)
     raw_export_path = export_path.strip()
@@ -165,6 +164,7 @@ def export_training_adapter(
     if _contains_path(source_path, destination) or _contains_path(destination, source_path):
         raise TrainingExportConflict("Training source and export destination must not overlap")
 
+    os.makedirs(configured_export_root, exist_ok=True)
     parent = os.path.dirname(destination)
     _reject_symlink_components(parent, configured_export_root, label="Export parent")
     parent = safe_path(parent, base=configured_export_root)
