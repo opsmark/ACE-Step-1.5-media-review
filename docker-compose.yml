@@ -9,9 +9,13 @@
 #   docker compose down            # Stop
 #   docker compose logs -f         # View logs
 #
-#   # Start REST API server instead:
-#   ACESTEP_MODE=api docker compose up
+#   # Start REST API server instead (ACESTEP_API_KEY is required because the
+#   # service must bind to the container interface for Docker forwarding):
+#   ACESTEP_MODE=api ACESTEP_API_KEY='replace-me' docker compose up
 #
+# By default the published host ports bind only to 127.0.0.1. To expose them
+# beyond the host, set ACESTEP_DOCKER_BIND_ADDRESS deliberately and configure
+# the corresponding Gradio username/password and/or API key first.
 # =============================================================================
 
 services:
@@ -43,12 +47,22 @@ services:
       - ACESTEP_CONFIG_PATH=${ACESTEP_CONFIG_PATH:-acestep-v15-turbo}
       - ACESTEP_LM_MODEL_PATH=${ACESTEP_LM_MODEL_PATH:-acestep-5Hz-lm-4B}
       - ACESTEP_EXTRA_ARGS=${ACESTEP_EXTRA_ARGS:-}
+      - ACESTEP_GRADIO_USERNAME=${ACESTEP_GRADIO_USERNAME:-}
+      - ACESTEP_GRADIO_PASSWORD=${ACESTEP_GRADIO_PASSWORD:-}
+      - ACESTEP_API_KEY=${ACESTEP_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      # The application binds the container interface, while the declared host
+      # publication below is loopback-only by default. The secure Gradio
+      # launcher accepts this boundary only while the published address itself
+      # remains loopback.
+      - ACESTEP_TRUST_PROXY_BOUNDARY=true
+      - ACESTEP_PROXY_BIND_ADDRESS=${ACESTEP_DOCKER_BIND_ADDRESS:-127.0.0.1}
       - TOKENIZERS_PARALLELISM=false
 
     # ---- Ports ----
     ports:
-      - "${GRADIO_PORT:-7860}:7860"
-      - "${API_PORT:-8001}:8001"
+      - "${ACESTEP_DOCKER_BIND_ADDRESS:-127.0.0.1}:${GRADIO_PORT:-7860}:7860"
+      - "${ACESTEP_DOCKER_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8001}:8001"
 
     # ---- Persistent volumes ----
     volumes:
