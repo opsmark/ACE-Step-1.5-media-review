@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from typing import Any, Callable, Dict, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -14,6 +13,12 @@ from acestep.api.train_api_dataset_service import register_training_dataset_rout
 from acestep.api.train_api_lokr_start_route import register_lokr_training_start_route
 from acestep.api.train_api_lora_start_route import register_lora_training_start_route
 from acestep.api.train_api_models import ExportLoRARequest, initialize_training_state
+from acestep.api.training_export_service import (
+    TrainingExportConflict,
+    TrainingExportError,
+    TrainingExportNotFound,
+    export_training_adapter,
+)
 
 
 def register_training_api_routes(
@@ -157,27 +162,27 @@ def register_training_api_routes(
 
     @app.post("/v1/training/export")
     async def export_lora(request: ExportLoRARequest, _: None = Depends(verify_api_key)):
-        """Export trained LoRA/LoKr weights."""
-
-        final_dir = os.path.join(request.lora_output_dir, "final")
-        checkpoint_dir = os.path.join(request.lora_output_dir, "checkpoints")
-        if os.path.exists(final_dir):
-            source_path = final_dir
-        elif os.path.exists(checkpoint_dir):
-            checkpoints = [d for d in os.listdir(checkpoint_dir) if d.startswith("epoch_")]
-            if not checkpoints:
-                raise HTTPException(status_code=404, detail="No checkpoints found")
-            checkpoints.sort(key=lambda x: int(x.split("_")[1]))
-            source_path = os.path.join(checkpoint_dir, checkpoints[-1])
-        else:
-            raise HTTPException(status_code=404, detail=f"No trained model found in {request.lora_output_dir}")
+        """Export trained LoRA/LoKr weights to a new contained directory."""
 
         try:
-            export_path = request.export_path.strip()
-            os.makedirs(os.path.dirname(export_path) if os.path.dirname(export_path) else ".", exist_ok=True)
-            if os.path.exists(export_path):
-                shutil.rmtree(export_path)
-            shutil.copytree(source_path, export_path)
-            return wrap_response({"message": "LoRA exported successfully", "export_path": export_path, "source": source_path})
+            result = export_training_adapter(
+                lora_output_dir=request.lora_output_dir,
+                export_path=request.export_path,
+            )
+        except TrainingExportNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except TrainingExportConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except TrainingExportError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
+            logger.exception("Training export failed")
             return wrap_response(None, code=500, error=f"Export failed: {exc}")
+
+        return wrap_response(
+            {
+                "message": "LoRA exported successfully",
+                "export_path": result.export_path,
+                "source": result.source_path,
+            }
+        )
