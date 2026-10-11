@@ -10,6 +10,11 @@ import tempfile
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Optional
 
+from acestep.api.model_registry import (
+    approved_lm_model_ids,
+    normalize_model_identifier,
+)
+
 
 def stop_tensorboard(app: Any) -> None:
     """Stop TensorBoard process if running."""
@@ -86,12 +91,20 @@ def temporary_llm_model(
     ensure_model_downloaded: Callable[[str, str], str],
     env_bool: Callable[[str, bool], bool],
 ):
-    """Temporarily switch LLM model for a critical section and restore afterward."""
+    """Temporarily switch to one registered LLM and restore afterward."""
 
-    desired = (lm_model_path or "").strip()
-    if not desired:
+    raw_desired = (lm_model_path or "").strip()
+    if not raw_desired:
         yield
         return
+
+    # Validate the request value exactly. Basenaming first would turn an
+    # absolute path ending in a known model name into an accepted identifier.
+    desired = normalize_model_identifier(
+        raw_desired,
+        allowed_ids=approved_lm_model_ids(),
+        field_name="temporary LM model",
+    )
 
     if llm is None or not getattr(llm, "llm_initialized", False):
         yield
@@ -104,8 +117,13 @@ def temporary_llm_model(
 
     with lock:
         prev_params = getattr(llm, "last_init_params", None)
-        prev_model = (prev_params or {}).get("lm_model_path") if isinstance(prev_params, dict) else None
-        if prev_model and prev_model.strip() == desired:
+        prev_model = (
+            (prev_params or {}).get("lm_model_path")
+            if isinstance(prev_params, dict)
+            else None
+        )
+        prev_model_name = get_model_name(prev_model) if prev_model else None
+        if prev_model_name and prev_model_name.strip() == desired:
             yield
             return
 
@@ -113,12 +131,9 @@ def temporary_llm_model(
         checkpoint_dir = os.path.join(project_root, "checkpoints")
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-        lm_model_name = get_model_name(desired)
-        if lm_model_name:
-            try:
-                ensure_model_downloaded(lm_model_name, checkpoint_dir)
-            except Exception:
-                pass
+        # Do not swallow registry, containment or provider failures and then
+        # proceed into the loader with the original untrusted string.
+        ensure_model_downloaded(desired, checkpoint_dir)
 
         restore_params = prev_params if isinstance(prev_params, dict) else None
 
@@ -126,8 +141,12 @@ def temporary_llm_model(
         try:
             new_params = dict(restore_params) if restore_params else {
                 "checkpoint_dir": checkpoint_dir,
-                "backend": os.getenv("ACESTEP_LM_BACKEND", "vllm").strip().lower() or "vllm",
-                "device": os.getenv("ACESTEP_LM_DEVICE", os.getenv("ACESTEP_DEVICE", "auto")),
+                "backend": os.getenv("ACESTEP_LM_BACKEND", "vllm").strip().lower()
+                or "vllm",
+                "device": os.getenv(
+                    "ACESTEP_LM_DEVICE",
+                    os.getenv("ACESTEP_DEVICE", "auto"),
+                ),
                 "offload_to_cpu": env_bool("ACESTEP_LM_OFFLOAD_TO_CPU", False),
                 "dtype": None,
             }
