@@ -34,6 +34,15 @@ jobs:
             ref: security/model-selector-containment-20261011
             dependencies: loguru==0.7.3
             command: python -m unittest -v acestep.api.model_selection_security_test
+          - name: Model code provenance
+            ref: security/model-code-provenance-20261011
+            dependencies: ""
+            command: >-
+              python -m compileall -q
+              acestep/api/trusted_model_loader.py
+              acestep/core/generation/handler/init_service_loader.py
+              acestep/llm_inference.py
+              && python -m unittest -v acestep.api.trusted_model_loader_test
           - name: TensorBoard loopback
             ref: security/tensorboard-loopback-20261011
             dependencies: ""
