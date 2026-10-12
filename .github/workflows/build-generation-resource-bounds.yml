@@ -31,8 +31,10 @@ jobs:
             'pydantic>=2,<3' 'fastapi>=0.110' 'starlette>=0.36' \
             'loguru>=0.7' 'uvicorn>=0.27' 'httpx>=0.27' 'python-multipart>=0.0.18'
 
-      - name: Apply bounded source transform
-        run: python .github/scripts/apply_generation_resource_bounds.py
+      - name: Repair and apply bounded source transform
+        run: |
+          python .github/scripts/repair_generation_resource_builder.py
+          python .github/scripts/apply_generation_resource_bounds.py
 
       - name: Compile changed sources
         run: |
@@ -79,6 +81,7 @@ jobs:
       - name: Seal candidate without one-shot builders
         run: |
           rm -f .github/scripts/apply_generation_resource_bounds.py
+          rm -f .github/scripts/repair_generation_resource_builder.py
           rm -f .github/scripts/write_generation_resource_receipt.py
           rm -f .github/workflows/build-generation-resource-bounds.yml
           git diff --check
