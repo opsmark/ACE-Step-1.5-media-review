@@ -1,0 +1,88 @@
+name: Requalify generation resource boundaries
+
+on:
+  push:
+    branches:
+      - security/generation-resource-bounds-20261012
+
+permissions:
+  contents: write
+
+jobs:
+  red-team-requalify:
+    if: ${{ !contains(github.event.head_commit.message, '[generation-bounds-requalified]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out candidate branch
+        uses: actions/checkout@v4
+        with:
+          ref: security/generation-resource-bounds-20261012
+          fetch-depth: 0
+
+      - name: Set up supported Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install focused test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check \
+            'pydantic>=2,<3' 'fastapi>=0.110' 'starlette>=0.36' \
+            'loguru>=0.7' 'uvicorn>=0.27' 'httpx>=0.27' 'python-multipart>=0.0.18'
+
+      - name: Apply red-team corrections
+        run: python .github/scripts/redteam_generation_resource_bounds.py
+
+      - name: Compile corrected sources
+        run: |
+          python -m compileall -q \
+            acestep/api/generation_resource_policy.py \
+            acestep/api/generation_resource_policy_test.py \
+            acestep/api/generation_resource_middleware_test.py \
+            acestep/api/jobs/store.py \
+            acestep/api/job_execution_runtime.py
+
+      - name: Run focused and parent checks
+        run: |
+          set -o pipefail
+          python -m unittest -v \
+            acestep.api.generation_resource_policy_test \
+            acestep.api.generation_resource_middleware_test \
+            acestep.api.http.authenticated_router_test \
+            acestep.api.server_cli_test \
+            acestep.api.jobs.store_test \
+            acestep.api.jobs.worker_loops_test \
+            2>&1 | tee /tmp/generation-resource-requalification.txt
+
+      - name: Verify corrected source shape
+        run: |
+          git diff --check
+          grep -n 'Conflicting Content-Length headers' acestep/api/generation_resource_policy.py
+          grep -n 'normalized_path' acestep/api/generation_resource_policy.py
+          grep -n 'record.cancel_requested' acestep/api/jobs/store.py
+          python - <<'PY'
+          from pathlib import Path
+          source = Path('acestep/api/job_execution_runtime.py').read_text(encoding='utf-8')
+          cancel_at = source.index('reason = job_store.cancellation_reason(job_id)')
+          initialize_at = source.index('await ensure_models_initialized_fn(app_state)')
+          second_cancel_at = source.index('reason = job_store.cancellation_reason(job_id)', cancel_at + 1)
+          assert cancel_at < initialize_at < second_cancel_at
+          PY
+
+      - name: Replace qualification receipt
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: python .github/scripts/write_generation_resource_requalification.py /tmp/generation-resource-requalification.txt
+
+      - name: Seal red-team requalification
+        run: |
+          rm -f .github/scripts/redteam_generation_resource_bounds.py
+          rm -f .github/scripts/write_generation_resource_requalification.py
+          rm -f .github/workflows/requalify-generation-resource-bounds.yml
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m '[generation-bounds-requalified] Preserve sticky cancellation and framing limits'
+          git push origin HEAD:security/generation-resource-bounds-20261012
