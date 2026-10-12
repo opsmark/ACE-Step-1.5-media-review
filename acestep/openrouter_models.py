@@ -9,6 +9,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field
 
+from acestep.api.generation_resource_policy import LIMITS
+
 
 # =============================================================================
 # Request Models
@@ -16,14 +18,22 @@ from pydantic import BaseModel, Field
 
 class AudioInputContent(BaseModel):
     """Audio input content in base64 format."""
-    data: str = Field(..., description="Base64-encoded audio data")
-    format: str = Field(default="mp3", description="Audio format (mp3, wav, flac, etc.)")
+    data: str = Field(
+        ...,
+        max_length=LIMITS.max_audio_part_base64_chars,
+        description="Base64-encoded audio data",
+    )
+    format: str = Field(
+        default="mp3", max_length=8, description="Audio format (mp3, wav, flac, etc.)"
+    )
 
 
 class TextContent(BaseModel):
     """Text content block."""
     type: Literal["text"] = "text"
-    text: str = Field(..., description="Text content")
+    text: str = Field(
+        ..., max_length=LIMITS.max_message_text_chars, description="Text content"
+    )
 
 
 class AudioContent(BaseModel):
@@ -33,7 +43,7 @@ class AudioContent(BaseModel):
 
 
 # Union type for message content
-ContentPart = Union[TextContent, AudioContent, Dict[str, Any]]
+ContentPart = Union[TextContent, AudioContent]
 
 
 class ChatMessage(BaseModel):
@@ -45,7 +55,10 @@ class ChatMessage(BaseModel):
 
 class AudioConfig(BaseModel):
     """Audio generation configuration."""
-    duration: Optional[float] = Field(default=None, description="Target audio duration in seconds")
+    duration: Optional[float] = Field(
+        default=None, gt=0, le=LIMITS.max_duration_seconds,
+        description="Target audio duration in seconds",
+    )
     format: str = Field(default="mp3", description="Output audio format")
     # ACE-Step specific parameters
     bpm: Optional[int] = Field(default=None, description="Beats per minute")
@@ -57,8 +70,12 @@ class AudioConfig(BaseModel):
 
 class ChatCompletionRequest(BaseModel):
     """OpenRouter-compatible chat completion request."""
-    model: str = Field(..., description="Model ID to use")
-    messages: List[ChatMessage] = Field(..., description="List of messages")
+    model: str = Field(
+        ..., min_length=1, max_length=LIMITS.max_model_id_chars, description="Model ID to use"
+    )
+    messages: List[ChatMessage] = Field(
+        ..., min_length=1, max_length=LIMITS.max_messages, description="List of messages"
+    )
 
     # Modalities
     modalities: Optional[List[str]] = Field(
@@ -75,26 +92,36 @@ class ChatCompletionRequest(BaseModel):
     # Standard OpenAI parameters
     temperature: Optional[float] = Field(default=None, ge=0, le=2)
     top_p: Optional[float] = Field(default=None, ge=0, le=1)
-    top_k: Optional[int] = Field(default=None, ge=0)
-    max_tokens: Optional[int] = Field(default=None, ge=1)
+    top_k: Optional[int] = Field(default=None, ge=0, le=LIMITS.max_top_k)
+    max_tokens: Optional[int] = Field(default=None, ge=1, le=LIMITS.max_tokens)
     stream: bool = Field(default=False, description="Enable streaming response")
     stop: Optional[Union[str, List[str]]] = Field(default=None)
     seed: Optional[Union[int, str]] = Field(default=None, description="Seed(s) for reproducibility. Comma-separated for batch (e.g. '42,123,456')")
 
     # ACE-Step specific parameters (extended)
     thinking: Optional[bool] = Field(default=None, description="Use LM for audio code generation")
-    guidance_scale: Optional[float] = Field(default=None, description="Classifier-free guidance scale")
-    batch_size: Optional[int] = Field(default=None, description="Number of audio samples to generate")
+    guidance_scale: Optional[float] = Field(
+        default=None, ge=0, le=50, description="Classifier-free guidance scale"
+    )
+    batch_size: Optional[int] = Field(
+        default=None, ge=1, le=LIMITS.max_batch_size,
+        description="Number of audio samples to generate",
+    )
 
     # ACE-Step direct fields (bypass message parsing / audio_config)
-    lyrics: str = Field(default="", description="Direct lyrics input (bypass message parsing)")
+    lyrics: str = Field(
+        default="", max_length=LIMITS.max_lyrics_chars,
+        description="Direct lyrics input (bypass message parsing)",
+    )
     sample_mode: bool = Field(default=False, description="Auto-generate caption/lyrics/metas via LM; user message becomes the query")
     use_format: bool = Field(default=False, description="Use format_sample to enhance caption/lyrics")
     use_cot_caption: bool = Field(default=True, description="Use CoT for caption rewriting")
     use_cot_language: bool = Field(default=True, description="Use CoT for language detection")
 
     # Task type
-    task_type: str = Field(default="text2music", description="Task type: text2music, cover, cover-nofsq, repaint, extract, lego, complete")
+    task_type: Literal[
+        "text2music", "cover", "cover-nofsq", "repaint", "extract", "lego", "complete"
+    ] = Field(default="text2music", description="Generation task type")
 
     # Audio editing parameters
     repainting_start: float = Field(default=0.0, description="Repainting region start (seconds)")
@@ -102,11 +129,23 @@ class ChatCompletionRequest(BaseModel):
     audio_cover_strength: float = Field(default=1.0, description="Audio cover strength (0.0~1.0)")
 
     # Extended fields for ComfyUI node compatibility
-    audio_codes: str = Field(default="", description="Pre-computed audio codes (bypass auto-conversion)")
-    cover_noise_strength: float = Field(default=0.0, description="Cover noise strength (0=pure noise, 1=closest to src)")
-    inference_steps: int = Field(default=8, description="Number of diffusion inference steps")
-    infer_method: str = Field(default="ode", description="Diffusion inference method: 'ode' or 'sde'")
-    lm_cfg_scale: float = Field(default=2.0, description="LM classifier-free guidance scale")
+    audio_codes: str = Field(
+        default="", max_length=LIMITS.max_audio_codes_chars,
+        description="Pre-computed audio codes (bypass auto-conversion)",
+    )
+    cover_noise_strength: float = Field(
+        default=0.0, ge=0, le=1, description="Cover noise strength"
+    )
+    inference_steps: int = Field(
+        default=8, ge=1, le=LIMITS.max_inference_steps,
+        description="Number of diffusion inference steps",
+    )
+    infer_method: Literal["ode", "sde"] = Field(
+        default="ode", description="Diffusion inference method"
+    )
+    lm_cfg_scale: float = Field(
+        default=2.0, ge=0, le=20, description="LM classifier-free guidance scale"
+    )
     use_cot_metas: Optional[bool] = Field(default=None, description="Use CoT for metadata generation (auto if None)")
 
     class Config:

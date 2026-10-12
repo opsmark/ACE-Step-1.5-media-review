@@ -15,6 +15,15 @@ from fastapi import APIRouter, HTTPException, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from acestep.api.generation_resource_policy import (
+    GenerationLimitError,
+    read_mapping_payload_limited,
+    validate_generation_work,
+    validate_param_object,
+    validate_task_id_query,
+    validate_text_inputs,
+)
+
 # Global results directory inside project root
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_RESULTS_DIR = os.path.join(PROJECT_ROOT, "gradio_outputs").replace("\\", "/")
@@ -47,6 +56,20 @@ def _wrap_response(data: Any, code: int = 200, error: Optional[str] = None) -> D
         "timestamp": int(time.time() * 1000),
         "extra": None,
     }
+
+
+async def _read_api_payload(request: Request) -> dict:
+    try:
+        return await read_mapping_payload_limited(request)
+    except GenerationLimitError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+def _enforce_limits(func, /, *args, **kwargs):
+    try:
+        return func(*args, **kwargs)
+    except GenerationLimitError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 def verify_token_from_request(body: dict, authorization: Optional[str] = None) -> Optional[str]:
@@ -254,13 +277,7 @@ async def get_audio(path: str, _: None = Depends(verify_api_key)):
 @router.post("/create_random_sample")
 async def create_random_sample(request: Request, authorization: Optional[str] = Header(None)):
     """Get random sample parameters from pre-loaded example data"""
-    content_type = (request.headers.get("content-type") or "").lower()
-
-    if "json" in content_type:
-        body = await request.json()
-    else:
-        form = await request.form()
-        body = {k: v for k, v in form.items()}
+    body = await _read_api_payload(request)
 
     verify_token_from_request(body, authorization)
     sample_type = body.get("sample_type", "simple_mode") or "simple_mode"
@@ -280,13 +297,7 @@ async def create_random_sample(request: Request, authorization: Optional[str] = 
 @router.post("/query_result")
 async def query_result(request: Request, authorization: Optional[str] = Header(None)):
     """Batch query task results"""
-    content_type = (request.headers.get("content-type") or "").lower()
-
-    if "json" in content_type:
-        body = await request.json()
-    else:
-        form = await request.form()
-        body = {k: v for k, v in form.items()}
+    body = await _read_api_payload(request)
 
     verify_token_from_request(body, authorization)
     task_ids = body.get("task_id_list", [])
@@ -296,6 +307,8 @@ async def query_result(request: Request, authorization: Optional[str] = Header(N
             task_ids = json.loads(task_ids)
         except Exception:
             task_ids = []
+
+    task_ids = _enforce_limits(validate_task_id_query, task_ids)
 
     results = []
     for task_id in task_ids:
@@ -324,17 +337,13 @@ async def format_input(request: Request, authorization: Optional[str] = Header(N
     if not llm_handler or not llm_handler.llm_initialized:
         return _wrap_response(None, code=500, error="LLM not initialized")
 
-    content_type = (request.headers.get("content-type") or "").lower()
-    if "json" in content_type:
-        body = await request.json()
-    else:
-        form = await request.form()
-        body = {k: v for k, v in form.items()}
+    body = await _read_api_payload(request)
 
     verify_token_from_request(body, authorization)
 
     caption = body.get("prompt", "") or ""
     lyrics = body.get("lyrics", "") or ""
+    _enforce_limits(validate_text_inputs, prompt=caption, lyrics=lyrics)
     temperature = float(body.get("temperature", 0.85))
 
     from acestep.inference import format_sample
@@ -373,12 +382,7 @@ async def release_task(request: Request, authorization: Optional[str] = Header(N
     if not dit_handler or dit_handler.model is None:
         raise HTTPException(status_code=500, detail="DiT model not initialized")
 
-    content_type = (request.headers.get("content-type") or "").lower()
-    if "json" in content_type:
-        body = await request.json()
-    else:
-        form = await request.form()
-        body = {k: v for k, v in form.items()}
+    body = await _read_api_payload(request)
 
     verify_token_from_request(body, authorization)
     task_id = str(uuid4())
@@ -390,8 +394,9 @@ async def release_task(request: Request, authorization: Optional[str] = Header(N
     if isinstance(param_obj, str):
         try:
             param_obj = json.loads(param_obj)
-        except Exception:
-            param_obj = {}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="param_obj must be valid JSON") from exc
+    param_obj = _enforce_limits(validate_param_object, param_obj)
 
     # Helper to get param with aliases
     def get_param(key, *aliases, default=None):
@@ -423,6 +428,21 @@ async def release_task(request: Request, authorization: Optional[str] = Header(N
         lyrics = get_param("lyrics", default="") or ""
         vocal_language = get_param("vocal_language", "language", default="en") or "en"
         lm_temperature = float(get_param("lm_temperature", "temperature", default=0.85) or 0.85)
+        _enforce_limits(
+            validate_text_inputs,
+            prompt=caption, lyrics=lyrics, sample_query=sample_query,
+        )
+        _enforce_limits(
+            validate_generation_work,
+            duration=get_param("audio_duration", "duration", default=-1),
+            batch_size=get_param("batch_size", default=2),
+            inference_steps=get_param("inference_steps", default=8),
+            task_type=get_param("task_type", default="text2music"),
+            infer_method=get_param("infer_method", default="ode"),
+            audio_format=get_param("audio_format", default="flac"),
+            seed=get_param("seed", default=-1),
+            lm_initialized=bool(llm_handler and llm_handler.llm_initialized),
+        )
 
         # Process sample_mode: use LLM to auto-generate caption/lyrics/metas
         if sample_mode or has_sample_query:
@@ -478,6 +498,22 @@ async def release_task(request: Request, authorization: Optional[str] = Header(N
                         sample_timesignature = format_result.timesignature
                     if format_result.language:
                         sample_language = format_result.language
+
+        _enforce_limits(
+            validate_text_inputs,
+            prompt=caption, lyrics=lyrics, sample_query=sample_query,
+        )
+        _enforce_limits(
+            validate_generation_work,
+            duration=sample_duration or get_param("audio_duration", "duration", default=-1),
+            batch_size=get_param("batch_size", default=2),
+            inference_steps=get_param("inference_steps", default=8),
+            task_type=get_param("task_type", default="text2music"),
+            infer_method=get_param("infer_method", default="ode"),
+            audio_format=get_param("audio_format", default="flac"),
+            seed=get_param("seed", default=-1),
+            lm_initialized=bool(llm_handler and llm_handler.llm_initialized),
+        )
 
         # Build generation params with alias support
         params = GenerationParams(
@@ -586,6 +622,8 @@ async def release_task(request: Request, authorization: Optional[str] = Header(N
 
         return _wrap_response({"task_id": task_id, "status": "succeeded"})
 
+    except GenerationLimitError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as e:

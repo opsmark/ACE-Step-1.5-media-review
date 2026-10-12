@@ -7,6 +7,7 @@ import torch
 from loguru import logger
 
 from acestep.constants import TASK_INSTRUCTIONS
+from acestep.api.generation_resource_policy import LIMITS
 
 
 class TaskUtilsMixin:
@@ -20,6 +21,10 @@ class TaskUtilsMixin:
         self, actual_batch_size: int, seed, use_random_seed: bool
     ) -> Tuple[List[int], str]:
         """Prepare per-item seeds and UI seed string."""
+        if not isinstance(actual_batch_size, int) or not (1 <= actual_batch_size <= LIMITS.max_batch_size):
+            raise ValueError(
+                f"actual_batch_size must be between 1 and {LIMITS.max_batch_size}"
+            )
         actual_seed_list: List[int] = []
         seed_value_for_ui = ""
         try:
@@ -117,7 +122,9 @@ class TaskUtilsMixin:
     def create_target_wavs(self, duration_seconds: float) -> torch.Tensor:
         """Create silent stereo target audio with safe duration handling."""
         try:
-            duration_seconds = max(0.1, round(duration_seconds, 1))
+            duration_seconds = min(
+                LIMITS.max_duration_seconds, max(0.1, round(duration_seconds, 1))
+            )
             frames = int(duration_seconds * 48000)
             return torch.zeros(2, frames)
         except (TypeError, ValueError, OverflowError):

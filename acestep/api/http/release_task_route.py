@@ -8,6 +8,11 @@ from typing import Any, Callable, Dict, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
 
+from acestep.api.generation_resource_policy import (
+    GenerationLimitError,
+    generation_timeout_seconds,
+    validate_generate_request,
+)
 from acestep.api.http.release_task_request_parser import parse_release_task_request
 
 
@@ -63,7 +68,22 @@ def register_release_task_route(
             lm_default_top_p=lm_default_top_p,
         )
 
+        try:
+            validate_generate_request(
+                req, lm_initialized=bool(getattr(app.state, "_llm_initialized", False))
+            )
+        except GenerationLimitError as exc:
+            for temp_path in temp_files:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
         record = store.create()
+        set_deadline = getattr(store, "set_deadline", None)
+        if callable(set_deadline):
+            set_deadline(record.job_id, generation_timeout_seconds())
         queue_ref: asyncio.Queue = app.state.job_queue
         if queue_ref.full():
             for temp_path in temp_files:

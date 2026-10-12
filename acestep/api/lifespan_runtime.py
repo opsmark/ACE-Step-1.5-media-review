@@ -120,6 +120,7 @@ def initialize_lifespan_runtime(
     app.state.job_queue = asyncio.Queue(maxsize=queue_maxsize)
     app.state.pending_ids = deque()
     app.state.pending_lock = asyncio.Lock()
+    app.state.openrouter_prequeue_lock = asyncio.Lock()
     app.state.job_temp_files = {}
     app.state.job_temp_files_lock = asyncio.Lock()
     app.state.stats_lock = asyncio.Lock()
