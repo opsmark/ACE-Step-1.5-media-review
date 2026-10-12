@@ -11,7 +11,7 @@ new_helper = '''async def _run_prequeue_cover_conversion(handler: Any, src_audio
     """Keep the prequeue bound held until a started conversion thread exits.
 
     ``asyncio.to_thread`` cannot terminate a running Python/native thread when
-    its awaiting request is cancelled.  Waiting for that thread before
+    its awaiting request is cancelled. Waiting for that thread before
     propagating cancellation prevents repeated disconnects from creating an
     unbounded set of pre-admission conversion workers.
     """
@@ -19,7 +19,7 @@ new_helper = '''async def _run_prequeue_cover_conversion(handler: Any, src_audio
         asyncio.to_thread(handler.convert_src_audio_to_codes, src_audio_path)
     )
     try:
-        return await conversion
+        return await asyncio.shield(conversion)
     except asyncio.CancelledError:
         while not conversion.done():
             try:
@@ -28,7 +28,7 @@ new_helper = '''async def _run_prequeue_cover_conversion(handler: Any, src_audio
                 continue
         try:
             conversion.result()
-        except Exception:
+        except BaseException:
             pass
         raise
 
