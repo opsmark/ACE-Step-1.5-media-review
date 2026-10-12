@@ -7,6 +7,8 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 import uuid
 
+from .dataset_path_safety import validate_sample_id
+
 
 SUPPORTED_AUDIO_FORMATS = {".wav", ".mp3", ".flac", ".ogg", ".opus"}
 
@@ -36,6 +38,7 @@ class AudioSample:
     def __post_init__(self):
         if not self.id:
             self.id = str(uuid.uuid4())[:8]
+        self.id = validate_sample_id(self.id)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -47,6 +50,8 @@ class AudioSample:
 
         Handles backward compatibility for datasets without raw_lyrics/formatted_lyrics/genre.
         """
+        if not isinstance(data, dict):
+            raise TypeError("Dataset sample must be an object")
         valid_keys = {f.name for f in cls.__dataclass_fields__.values()}
         filtered_data = {k: v for k, v in data.items() if k in valid_keys}
         return cls(**filtered_data)

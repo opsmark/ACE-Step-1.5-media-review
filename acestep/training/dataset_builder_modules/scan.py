@@ -26,6 +26,7 @@ class ScanMixin:
             return [], f"❌ Not a directory: {directory}"
 
         self._current_dir = directory
+        self._dataset_audio_root = directory
         self.samples = []
 
         audio_files = []
