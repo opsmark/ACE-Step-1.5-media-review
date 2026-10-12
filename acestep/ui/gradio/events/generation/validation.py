@@ -6,10 +6,13 @@ such as duration limits, timesteps, and uploaded audio files.
 
 import re
 import gradio as gr
-import soundfile
 from typing import Any, Optional, List, Tuple
 
 from acestep.gpu_config import get_global_gpu_config
+from acestep.core.generation.handler.audio_input_limits import (
+    AudioInputLimitError,
+    validate_audio_file_limits,
+)
 from acestep.ui.gradio.i18n import t
 
 
@@ -120,18 +123,12 @@ def validate_uploaded_audio_file(audio_value: Any, audio_role: str = "reference"
         return gr.skip()
 
     try:
-        soundfile.info(audio_path)
+        validate_audio_file_limits(audio_path)
         return gr.skip()
-    except (OSError, RuntimeError, ValueError):
-        # ``soundfile`` (libsndfile) has spotty mp3 support and refuses
-        # files torchaudio / process_src_audio handle fine.  Issuing a
-        # silent ``gr.update(value=None)`` here previously cleared the
-        # user's upload while leaving the waveform visible (cached by
-        # the player) — the user clicked Generate and got
-        # "src_audio=None" with no obvious cause.  Preserve the value;
-        # the backend's own decode path will surface a clearer error
-        # if the file is genuinely unreadable.
-        return gr.skip()
+    except AudioInputLimitError:
+        role_key = "generation.source_audio" if audio_role == "source" else "generation.reference_audio"
+        gr.Warning(t("messages.audio_format_invalid", role=t(role_key)))
+        return gr.update(value=None)
 
 
 def _contains_audio_code_tokens(codes_string: str) -> bool:

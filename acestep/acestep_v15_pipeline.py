@@ -60,6 +60,7 @@ try:
         is_mps_platform,
     )
     from .model_downloader import ensure_lm_model
+    from .core.generation.handler.audio_input_limits import get_audio_input_limits
 except ImportError:
     # When executed as a script: `python acestep/acestep_v15_pipeline.py`
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -82,6 +83,7 @@ except ImportError:
         is_mps_platform,
     )
     from acestep.model_downloader import ensure_lm_model
+    from acestep.core.generation.handler.audio_input_limits import get_audio_input_limits
 
 
 def create_demo(init_params=None, language="en"):
@@ -650,6 +652,11 @@ def main():
             if p and p not in allowed_paths:
                 allowed_paths.append(p)
 
+        # Bound upload bytes at Gradio's ingress before temporary-file storage.
+        # Format-specific frame/channel/rate/duration checks run again immediately
+        # before any native decoder or resampler is allowed to allocate a waveform.
+        max_upload_bytes = get_audio_input_limits().max_file_bytes
+
         # Enable API endpoints if requested
         if args.enable_api:
             print("Enabling API endpoints...")
@@ -666,6 +673,7 @@ def main():
                 inbrowser=False,
                 auth=auth,
                 allowed_paths=allowed_paths,  # include output_dir + user-provided
+                max_file_size=max_upload_bytes,
             )
 
             # Now add API routes to Gradio's FastAPI app (app is available after launch)
@@ -696,6 +704,7 @@ def main():
                 inbrowser=False,
                 auth=auth,
                 allowed_paths=allowed_paths,  # include output_dir + user-provided
+                max_file_size=max_upload_bytes,
             )
     except Exception as e:
         print(f"Error launching Gradio: {e}", file=sys.stderr)
