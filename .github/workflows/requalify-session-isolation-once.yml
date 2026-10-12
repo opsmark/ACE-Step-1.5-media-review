@@ -1,4 +1,4 @@
-# repaired requalification after preserved failed run 38228229421
+# final requalification after Windows alias diagnostic 38228853043
 name: requalify-session-isolation-once
 
 on:
@@ -185,9 +185,9 @@ jobs:
 
           ## Framework and Windows requalification
 
-          The first requalification run, 38228229421, remained failed evidence: it exposed two Windows path-separator assumptions in tests, a real Windows reparse-point escape in the candidate, and a missing repository import path in the disposable Gradio probe. The candidate was corrected rather than relabeling that run as successful.
+          The failed runs remain evidence rather than being relabeled. Run 38228229421 exposed Windows path-spelling assumptions, a candidate link escape, and a missing import path in the disposable Gradio probe. Runs 38228695767 and 38228757246 passed the Gradio integration but still failed the Windows link case. Diagnostic run 38228853043 established the cause: Windows supplied the configured temporary root through an 8.3 alias while generated paths used the long alias, so managed-path recognition returned early even though the final entry was a real symlink/reparse point.
 
-          GitHub Actions run ${GITHUB_RUN_ID} completed the focused suites and compile checks on CPython 3.11 for both Ubuntu and Windows. The corrected source rejects POSIX symlinks and Windows reparse points inside managed output paths. Path-equivalence tests compare actual files rather than platform-specific slash spelling.
+          The candidate now compares both lexical and resolved path candidates against both lexical and canonical generated-root aliases before applying session containment and link/reparse-point rejection. GitHub Actions run ${GITHUB_RUN_ID} completed the focused suites and compile checks on CPython 3.11 for both Ubuntu and Windows. Path-equivalence tests compare actual files rather than platform-specific slash spelling.
 
           A separate exact Gradio 6.2.0 loopback probe created two independent clients. Repeated calls by one client retained one server-side opaque scope; the second client received a different scope. Each client generated and received a valid audio file while global generated-output allowed_paths remained disabled. The first client authorized its own raw artifact path, while the second client was denied that same path. This is a disposable framework integration check, not the target full ACE-Step UI, authentication deployment, GPU generation, Internet exposure, retention policy or production outcome.
           EOF
@@ -202,5 +202,5 @@ jobs:
           git config user.name "opsmark"
           git config user.email "rass991@gmail.com"
           git add -A
-          git commit -m "test: requalify session isolation on Windows and Gradio 6"
+          git commit -m "test: seal cross-platform session isolation evidence"
           git push origin "HEAD:${BRANCH}"
