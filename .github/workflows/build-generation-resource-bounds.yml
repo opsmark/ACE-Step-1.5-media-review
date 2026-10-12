@@ -36,6 +36,7 @@ jobs:
           python .github/scripts/repair_generation_resource_builder.py
           python .github/scripts/apply_generation_resource_bounds.py
           python .github/scripts/augment_generation_resource_integrations.py
+          python .github/scripts/repair_generation_resource_test.py
 
       - name: Compile changed sources
         run: |
@@ -90,6 +91,7 @@ jobs:
           rm -f .github/scripts/apply_generation_resource_bounds.py
           rm -f .github/scripts/augment_generation_resource_integrations.py
           rm -f .github/scripts/repair_generation_resource_builder.py
+          rm -f .github/scripts/repair_generation_resource_test.py
           rm -f .github/scripts/write_generation_resource_receipt.py
           rm -f .github/workflows/build-generation-resource-bounds.yml
           git diff --check
