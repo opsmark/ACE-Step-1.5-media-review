@@ -48,9 +48,67 @@ jobs:
 
       - name: Run focused behavioral and wiring tests
         run: |
-          python -m unittest -v \
-            acestep.training.dataset_builder_modules.dataset_manifest_path_security_test \
-            acestep.training.dataset_builder_modules.dataset_manifest_source_integration_test
+          python - <<'PY'
+          import importlib.util
+          import pathlib
+          import sys
+          import types
+          import unittest
+
+          root = pathlib.Path.cwd()
+          package_paths = {
+              "acestep": root / "acestep",
+              "acestep.training": root / "acestep" / "training",
+              "acestep.training.dataset_builder_modules": (
+                  root / "acestep" / "training" / "dataset_builder_modules"
+              ),
+          }
+          for name, path in package_paths.items():
+              package = types.ModuleType(name)
+              package.__path__ = [str(path)]
+              package.__package__ = name
+              sys.modules[name] = package
+
+          def load(name, path):
+              spec = importlib.util.spec_from_file_location(name, path)
+              module = importlib.util.module_from_spec(spec)
+              sys.modules[name] = module
+              spec.loader.exec_module(module)
+              return module
+
+          module_dir = package_paths["acestep.training.dataset_builder_modules"]
+          load(
+              "acestep.training.path_safety",
+              package_paths["acestep.training"] / "path_safety.py",
+          )
+          load(
+              "acestep.training.dataset_builder_modules.dataset_path_safety",
+              module_dir / "dataset_path_safety.py",
+          )
+          load(
+              "acestep.training.dataset_builder_modules.models",
+              module_dir / "models.py",
+          )
+          load(
+              "acestep.training.dataset_builder_modules.serialization",
+              module_dir / "serialization.py",
+          )
+          behavior = load(
+              "acestep.training.dataset_builder_modules.dataset_manifest_path_security_test",
+              module_dir / "dataset_manifest_path_security_test.py",
+          )
+          integration = load(
+              "acestep.training.dataset_builder_modules.dataset_manifest_source_integration_test",
+              module_dir / "dataset_manifest_source_integration_test.py",
+          )
+
+          suite = unittest.TestSuite()
+          loader = unittest.defaultTestLoader
+          suite.addTests(loader.loadTestsFromModule(behavior))
+          suite.addTests(loader.loadTestsFromModule(integration))
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          raise SystemExit(0 if result.wasSuccessful() else 1)
+          PY
 
       - name: Verify clean patch shape
         run: |
