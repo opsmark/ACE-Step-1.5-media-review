@@ -10,6 +10,12 @@ from typing import Any, List, Optional, Tuple
 import gradio as gr
 
 from acestep.training.dataset_builder import DatasetBuilder
+from .session_access import (
+    authorize_builder_sample,
+    authorize_training_path,
+    bind_builder_to_session,
+    validate_builder_audio_paths,
+)
 from .training_utils import _safe_slider
 
 
@@ -20,6 +26,7 @@ def scan_directory(
     tag_position: str,
     all_instrumental: bool,
     builder_state: Optional[DatasetBuilder],
+    session_artifact_scope: str | None = None,
 ) -> Tuple[Any, str, Any, DatasetBuilder]:
     """Scan a directory for audio files.
 
@@ -29,17 +36,30 @@ def scan_directory(
     if not audio_dir or not audio_dir.strip():
         return [], "❌ Please enter a directory path", _safe_slider(0, value=0, visible=False), builder_state
 
-    builder = builder_state if builder_state else DatasetBuilder()
+    try:
+        authorized_dir = authorize_training_path(
+            audio_dir.strip(),
+            session_artifact_scope,
+            must_exist=True,
+        )
+        builder = bind_builder_to_session(DatasetBuilder(), session_artifact_scope)
+    except ValueError as exc:
+        return (
+            [],
+            f"❌ Refused directory outside this session: {exc}",
+            _safe_slider(0, value=0, visible=False),
+            builder_state,
+        )
 
     builder.metadata.name = dataset_name
     builder.metadata.custom_tag = custom_tag
     builder.metadata.tag_position = tag_position
     builder.metadata.all_instrumental = all_instrumental
 
-    samples, status = builder.scan_directory(audio_dir.strip())
+    samples, status = builder.scan_directory(authorized_dir)
 
     if not samples:
-        return [], status, _safe_slider(0, value=0, visible=False), builder
+        return [], status, _safe_slider(0, value=0, visible=False), builder_state
 
     builder.set_all_instrumental(all_instrumental)
     if custom_tag:
@@ -96,6 +116,10 @@ def auto_label_all(
             builder_state,
         )
 
+    authorized, error = validate_builder_audio_paths(builder_state, must_exist=True)
+    if not authorized:
+        return builder_state.get_samples_dataframe_data(), error, builder_state
+
     def progress_callback(msg):
         if progress:
             try:
@@ -141,6 +165,11 @@ def get_sample_preview(
         return empty
 
     sample = builder_state.samples[idx]
+    try:
+        preview_path = authorize_builder_sample(builder_state, idx)
+    except ValueError as exc:
+        gr.Warning(f"Refused preview outside this session: {exc}")
+        return empty
     has_raw = sample.has_raw_lyrics()
 
     if sample.prompt_override == "genre":
@@ -153,7 +182,7 @@ def get_sample_preview(
     display_lyrics = sample.lyrics if sample.lyrics else sample.formatted_lyrics
 
     return (
-        sample.audio_path,
+        preview_path,
         sample.filename,
         sample.caption,
         sample.genre,
@@ -249,6 +278,7 @@ def save_dataset(
     save_path: str,
     dataset_name: str,
     builder_state: Optional[DatasetBuilder],
+    session_artifact_scope: str | None = None,
 ) -> Tuple[str, Any]:
     """Save the dataset to a JSON file.
 
@@ -267,6 +297,23 @@ def save_dataset(
     save_path = save_path.strip()
     if not save_path.lower().endswith(".json"):
         save_path = save_path + ".json"
+
+    try:
+        bind_builder_to_session(builder_state, session_artifact_scope)
+        save_path = authorize_training_path(
+            save_path,
+            session_artifact_scope,
+            must_exist=False,
+        )
+    except ValueError as exc:
+        return f"❌ Refused dataset save outside this session: {exc}", gr.update()
+
+    authorized, access_error = validate_builder_audio_paths(
+        builder_state,
+        must_exist=False,
+    )
+    if not authorized:
+        return access_error, gr.update()
 
     labeled_count = builder_state.get_labeled_count()
     if labeled_count == 0:

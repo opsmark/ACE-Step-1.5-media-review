@@ -60,6 +60,7 @@ def register_training_dataset_load_handler(
         inputs=[
             training_section[path_key],
             training_section["dataset_builder_state"],
+            training_section["session_artifact_scope"],
         ],
         outputs=_build_dataset_load_outputs(training_section, status_key),
     ).then(
@@ -75,13 +76,14 @@ def register_training_preprocess_handler(context: TrainingWiringContext) -> None
     training_section = context.training_section
     dit_handler = context.dit_handler
     training_section["preprocess_btn"].click(
-        fn=lambda output_dir, mode, state: train_h.preprocess_dataset(
-            output_dir, mode, dit_handler, state
+        fn=lambda output_dir, mode, state, scope: train_h.preprocess_dataset(
+            output_dir, mode, dit_handler, state, scope
         ),
         inputs=[
             training_section["preprocess_output_dir"],
             training_section["preprocess_mode"],
             training_section["dataset_builder_state"],
+            training_section["session_artifact_scope"],
         ],
         outputs=[training_section["preprocess_progress"]],
     )

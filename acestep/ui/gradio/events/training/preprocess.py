@@ -14,12 +14,19 @@ from loguru import logger
 from acestep.training.dataset_builder import DatasetBuilder
 from acestep.training.path_safety import safe_path
 from acestep.debug_utils import debug_log_for, debug_start_for, debug_end_for
+from .session_access import (
+    authorize_builder_sample,
+    authorize_training_path,
+    bind_builder_to_session,
+    validate_builder_audio_paths,
+)
 from .training_utils import _safe_slider
 
 
 def load_existing_dataset_for_preprocess(
     dataset_path: str,
     builder_state: Optional[DatasetBuilder],
+    session_artifact_scope: str | None = None,
 ):
     """Load an existing dataset JSON file for preprocessing.
 
@@ -49,7 +56,11 @@ def load_existing_dataset_for_preprocess(
         ) + empty_preview + updates
 
     try:
-        dataset_path = safe_path(dataset_path.strip())
+        dataset_path = authorize_training_path(
+            dataset_path.strip(),
+            session_artifact_scope,
+            must_exist=True,
+        )
     except ValueError:
         updates = (gr.update(), gr.update(), gr.update(), gr.update(), gr.update())
         return (
@@ -70,7 +81,16 @@ def load_existing_dataset_for_preprocess(
             builder_state,
         ) + empty_preview + updates
 
-    builder = DatasetBuilder()
+    try:
+        builder = bind_builder_to_session(DatasetBuilder(), session_artifact_scope)
+    except ValueError as exc:
+        updates = (gr.update(), gr.update(), gr.update(), gr.update(), gr.update())
+        return (
+            f"❌ Invalid session artifact scope: {exc}",
+            [],
+            _safe_slider(0, value=0, visible=False),
+            builder_state,
+        ) + empty_preview + updates
 
     t0 = debug_start_for("dataset", "load_dataset")
     samples, status = builder.load_dataset(dataset_path)
@@ -82,7 +102,17 @@ def load_existing_dataset_for_preprocess(
             status,
             [],
             _safe_slider(0, value=0, visible=False),
-            builder,
+            builder_state,
+        ) + empty_preview + updates
+
+    authorized, access_error = validate_builder_audio_paths(builder, must_exist=True)
+    if not authorized:
+        updates = (gr.update(), gr.update(), gr.update(), gr.update(), gr.update())
+        return (
+            access_error,
+            [],
+            _safe_slider(0, value=0, visible=False),
+            builder_state,
         ) + empty_preview + updates
 
     table_data = builder.get_samples_dataframe_data()
@@ -97,6 +127,7 @@ def load_existing_dataset_for_preprocess(
         info += "\nℹ️ Showing formatted lyrics where lyrics are empty."
 
     first_sample = builder.samples[0]
+    first_audio_path = authorize_builder_sample(builder, 0)
     has_raw = first_sample.has_raw_lyrics()
 
     if first_sample.prompt_override == "genre":
@@ -109,7 +140,7 @@ def load_existing_dataset_for_preprocess(
     display_lyrics = first_sample.lyrics if first_sample.lyrics else first_sample.formatted_lyrics
 
     preview = (
-        first_sample.audio_path,
+        first_audio_path,
         first_sample.filename,
         first_sample.caption,
         first_sample.genre,
@@ -146,6 +177,7 @@ def preprocess_dataset(
     preprocess_mode: str,
     dit_handler,
     builder_state: Optional[DatasetBuilder],
+    session_artifact_scope: str | None = None,
     progress=None,
 ) -> str:
     """Preprocess dataset to tensor files for fast training.
@@ -171,6 +203,23 @@ def preprocess_dataset(
     if dit_handler is None or dit_handler.model is None:
         return "❌ Model not initialized. Please initialize the service first."
 
+    try:
+        bind_builder_to_session(builder_state, session_artifact_scope)
+        output_dir = authorize_training_path(
+            output_dir.strip(),
+            session_artifact_scope,
+            must_exist=False,
+        )
+    except ValueError as exc:
+        return f"❌ Refused preprocessing path outside this session: {exc}"
+
+    authorized, access_error = validate_builder_audio_paths(
+        builder_state,
+        must_exist=True,
+    )
+    if not authorized:
+        return access_error
+
     def progress_callback(msg):
         if progress:
             try:
@@ -185,7 +234,7 @@ def preprocess_dataset(
     t0 = debug_start_for("dataset", "preprocess_to_tensors")
     output_paths, status = builder_state.preprocess_to_tensors(
         dit_handler=dit_handler,
-        output_dir=output_dir.strip(),
+        output_dir=output_dir,
         preprocess_mode=mode,
         progress_callback=progress_callback,
     )

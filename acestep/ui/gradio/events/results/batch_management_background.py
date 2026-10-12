@@ -15,6 +15,7 @@ from acestep.ui.gradio.events.results.batch_management_helpers import (
 from acestep.ui.gradio.events.results.batch_queue import store_batch_in_queue
 from acestep.ui.gradio.events.results.generation_progress import generate_with_progress
 from acestep.ui.gradio.i18n import t
+from acestep.ui.gradio.session_artifact_scope import resolve_session_artifact_scope
 
 
 def generate_next_batch_background(
@@ -50,6 +51,8 @@ def generate_next_batch_background(
 
     try:
         _apply_param_defaults(params)
+        active_scope = resolve_session_artifact_scope(params.get("session_artifact_scope"))
+        params["session_artifact_scope"] = active_scope
 
         gc.collect()
         if torch.cuda.is_available():
@@ -126,6 +129,7 @@ def generate_next_batch_background(
             repaint_strength=params.get("repaint_strength", 0.5),
             retake_variance=params.get("retake_variance", 0.0),
             retake_seed=params.get("retake_seed", ""),
+            session_artifact_scope=active_scope,
             progress=progress,
         )
 

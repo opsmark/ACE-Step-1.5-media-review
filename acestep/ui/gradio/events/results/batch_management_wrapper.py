@@ -20,6 +20,7 @@ from acestep.ui.gradio.events.results.batch_queue import (
 from acestep.ui.gradio.events.results.generation_info import IS_WINDOWS
 from acestep.ui.gradio.events.results.generation_progress import generate_with_progress
 from acestep.ui.gradio.i18n import t
+from acestep.ui.gradio.session_artifact_scope import resolve_session_artifact_scope
 
 
 def generate_with_batch_management(
@@ -64,10 +65,12 @@ def generate_with_batch_management(
     total_batches,
     batch_queue,
     generation_params_state,
+    session_artifact_scope=None,
     progress=gr.Progress(track_tqdm=True),
 ):
     """Wrap ``generate_with_progress`` with batch queue management state."""
     _ = generation_params_state  # reserved for API compatibility with wiring/state outputs
+    active_scope = resolve_session_artifact_scope(session_artifact_scope)
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -96,7 +99,8 @@ def generate_with_batch_management(
         retake_variance, retake_seed,
         flow_edit_morph, flow_edit_source_caption, flow_edit_source_lyrics,
         flow_edit_n_min, flow_edit_n_max, flow_edit_n_avg,
-        progress,
+        session_artifact_scope=active_scope,
+        progress=progress,
     )
 
     final_result_from_inner = None
@@ -171,6 +175,8 @@ def generate_with_batch_management(
         repaint_mode=repaint_mode, repaint_strength=repaint_strength,
         retake_variance=retake_variance, retake_seed=retake_seed,
     )
+
+    saved_params["session_artifact_scope"] = active_scope
 
     next_params = saved_params.copy()
     next_params["text2music_audio_code_string"] = ""

@@ -103,6 +103,29 @@ class BatchManagementWrapperTests(unittest.TestCase):
 
         self.assertEqual(state["store_calls"][0]["codes"], ["code-0", "code-1", "code-2"])
 
+    def test_session_scope_forwards_and_persists_for_background(self):
+        """Foreground generation must retain the exact opaque session scope."""
+        module, state = load_batch_management_module(is_windows=False)
+        seen = {}
+
+        def _gen(*_args, **kwargs):
+            """Capture the scope forwarded to the inner generator."""
+            seen["scope"] = kwargs.get("session_artifact_scope")
+            yield build_progress_result(length=48)
+
+        kwargs = _build_call_kwargs(module)
+        scope = "A" * 43
+        kwargs["session_artifact_scope"] = scope
+        with patch.dict(
+            module.generate_with_batch_management.__globals__,
+            {"generate_with_progress": _gen},
+        ):
+            list(module.generate_with_batch_management(None, None, **kwargs))
+
+        self.assertEqual(scope, seen["scope"])
+        saved_params = state["store_calls"][0]["generation_params"]
+        self.assertEqual(scope, saved_params["session_artifact_scope"])
+
     def test_no_fsq_forwards_to_generation_and_saved_params(self):
         """Wrapper should pass and persist the Remix no_fsq checkbox."""
         module, state = load_batch_management_module(is_windows=False)

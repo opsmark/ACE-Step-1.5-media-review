@@ -6,7 +6,6 @@ LRC generation handler.
 """
 import os
 import re
-import datetime
 import tempfile
 import time as time_module
 from typing import Dict, Any, Optional, List
@@ -15,7 +14,6 @@ import gradio as gr
 from loguru import logger
 
 from acestep.ui.gradio.i18n import t
-from acestep.ui.gradio.events.results.generation_info import DEFAULT_RESULTS_DIR
 from acestep.ui.gradio.events.results.session_artifacts import load_batch_sample_session_tensors
 
 
@@ -127,12 +125,17 @@ def _format_vtt_timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
 
-def lrc_to_vtt_file(lrc_text: str, total_duration: float = None) -> Optional[str]:
+def lrc_to_vtt_file(
+    lrc_text: str,
+    total_duration: float = None,
+    output_dir: str | None = None,
+) -> Optional[str]:
     """Convert LRC text to a VTT subtitle file and return its path.
 
     Args:
         lrc_text: LRC format lyrics string.
         total_duration: Total audio duration in seconds.
+        output_dir: Optional session-owned destination directory.
 
     Returns:
         Path to the generated VTT file, or ``None`` on failure.
@@ -153,10 +156,9 @@ def lrc_to_vtt_file(lrc_text: str, total_duration: float = None) -> Optional[str
         vtt_lines.append("")
 
     try:
-        vtt_output_dir = os.path.join(DEFAULT_RESULTS_DIR, "subtitles")
+        vtt_output_dir = output_dir or tempfile.mkdtemp(prefix="acestep_subtitles_")
         os.makedirs(vtt_output_dir, exist_ok=True)
-        ts = int(time_module.time())
-        vtt_filename = f"subtitles_{ts}_{datetime.datetime.now().strftime('%H%M%S')}.vtt"
+        vtt_filename = f"subtitles_{time_module.time_ns()}.vtt"
         vtt_path = os.path.join(vtt_output_dir, vtt_filename).replace("\\", "/")
         with open(vtt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(vtt_lines))
