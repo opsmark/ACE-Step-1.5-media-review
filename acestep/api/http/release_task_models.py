@@ -7,6 +7,7 @@ from typing import List, Literal, Optional, Union
 from pydantic import BaseModel, Field
 
 from acestep.constants import DEFAULT_DIT_INSTRUCTION
+from acestep.api.generation_resource_policy import LIMITS
 
 
 class GenerateMusicRequest(BaseModel):
@@ -16,9 +17,17 @@ class GenerateMusicRequest(BaseModel):
     clients remain compatible while route handling is decomposed.
     """
 
-    prompt: str = Field(default="", description="Text prompt describing the music (local/per-track description for lego SFT)")
-    global_caption: str = Field(default="", description="Global song description for SFT-stems lego tasks (full song context)")
-    lyrics: str = Field(default="", description="Lyric text")
+    prompt: str = Field(
+        default="", max_length=LIMITS.max_prompt_chars,
+        description="Text prompt describing the music",
+    )
+    global_caption: str = Field(
+        default="", max_length=LIMITS.max_prompt_chars,
+        description="Global song description",
+    )
+    lyrics: str = Field(
+        default="", max_length=LIMITS.max_lyrics_chars, description="Lyric text"
+    )
 
     # New API semantics:
     # - thinking=True: use 5Hz LM to generate audio codes (lm-dit behavior)
@@ -28,25 +37,35 @@ class GenerateMusicRequest(BaseModel):
     # Sample-mode requests auto-generate caption/lyrics/metas via LM (no user prompt).
     sample_mode: bool = False
     # Description for sample mode: auto-generate caption/lyrics from description query
-    sample_query: str = Field(default="", description="Query/description for sample mode (use create_sample)")
+    sample_query: str = Field(
+        default="", max_length=LIMITS.max_sample_query_chars,
+        description="Query/description for sample mode",
+    )
     # Whether to use format_sample() to enhance input caption/lyrics
     use_format: bool = Field(default=False, description="Use format_sample() to enhance input (default: False)")
     # Model name for multi-model support (select which DiT model to use)
-    model: Optional[str] = Field(default=None, description="Model name to use (e.g., 'acestep-v15-turbo')")
+    model: Optional[str] = Field(
+        default=None, max_length=LIMITS.max_model_id_chars,
+        description="Approved model identifier",
+    )
 
     bpm: Optional[int] = None
     key_scale: str = ""
     time_signature: str = ""
     vocal_language: str = "en"
-    inference_steps: int = 8
-    guidance_scale: float = 7.0
+    inference_steps: int = Field(default=8, ge=1, le=LIMITS.max_inference_steps)
+    guidance_scale: float = Field(default=7.0, ge=0, le=50)
     use_random_seed: bool = True
     seed: Union[int, str] = -1
 
     reference_audio_path: Optional[str] = None
     src_audio_path: Optional[str] = None
-    audio_duration: Optional[float] = None
-    batch_size: Optional[int] = None
+    audio_duration: Optional[float] = Field(
+        default=None, gt=0, le=LIMITS.max_duration_seconds
+    )
+    batch_size: Optional[int] = Field(
+        default=None, ge=1, le=LIMITS.max_batch_size
+    )
 
     repainting_start: float = 0.0
     repainting_end: Optional[float] = None
@@ -59,9 +78,12 @@ class GenerateMusicRequest(BaseModel):
     )
     audio_code_string: str = Field(
         default="",
+        max_length=LIMITS.max_audio_codes_chars,
         description="User-provided audio semantic codes string for code-control generation. When non-empty, skips LM code generation.",
     )
-    task_type: str = "text2music"
+    task_type: Literal[
+        "text2music", "cover", "cover-nofsq", "repaint", "extract", "lego", "complete"
+    ] = "text2music"
     chunk_mask_mode: Literal["explicit", "auto"] = "auto"
     repaint_latent_crossfade_frames: int = Field(
         default=10,
@@ -112,7 +134,7 @@ class GenerateMusicRequest(BaseModel):
     dcw_high_scaler: float = Field(default=0.02, description="High-band DCW scaler (used only in 'double' mode).")
     dcw_wavelet: str = Field(default="haar", description="PyWavelets basis, e.g. 'haar', 'db4', 'sym8'.")
 
-    audio_format: str = Field(
+    audio_format: Literal["flac", "mp3", "opus", "aac", "wav", "wav32", "ogg", "m4a"] = Field(
         default="mp3",
         description="Output audio format. Supported formats: 'flac', 'mp3', 'opus', 'aac', 'wav', 'wav32'. Default: 'mp3'",
     )
@@ -136,7 +158,9 @@ class GenerateMusicRequest(BaseModel):
     lm_top_k: Optional[int] = None
     lm_top_p: Optional[float] = 0.9
     lm_repetition_penalty: float = 1.0
-    lm_negative_prompt: str = "NO USER INPUT"
+    lm_negative_prompt: str = Field(
+        default="NO USER INPUT", max_length=LIMITS.max_prompt_chars
+    )
 
     class Config:
         """Legacy pydantic config preserving prior population semantics."""

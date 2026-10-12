@@ -33,6 +33,9 @@ class _JobRecord:
     updated_at: Optional[float] = None
     done_event: Optional[asyncio.Event] = None
     progress_queue: Optional[asyncio.Queue] = None
+    cancel_requested: bool = False
+    cancel_reason: Optional[str] = None
+    deadline_monotonic: Optional[float] = None
 
 
 def _atomic_write_json(path: str, payload: Dict[str, Any]) -> None:
@@ -111,20 +114,27 @@ class _JobStore:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def mark_running(self, job_id: str) -> None:
-        """Mark a queued job as running and set timestamps/progress."""
+    def mark_running(self, job_id: str) -> bool:
+        """Mark a queued job running unless cancellation already won the race."""
         with self._lock:
             record = self._jobs[job_id]
+            if record.cancel_requested or record.status == "failed":
+                return False
             record.status = "running"
             record.started_at = time.time()
             record.progress = max(record.progress, 0.01)
             record.stage = "running"
             record.updated_at = time.time()
+            return True
 
-    def mark_succeeded(self, job_id: str, result: Dict[str, Any]) -> None:
-        """Mark a job as succeeded and attach its result payload."""
+    def mark_succeeded(self, job_id: str, result: Dict[str, Any]) -> bool:
+        """Mark success only when a timeout/disconnect has not cancelled the job."""
         with self._lock:
             record = self._jobs[job_id]
+            if record.cancel_requested or record.status == "failed":
+                if record.error is None:
+                    record.error = record.cancel_reason or "Generation cancelled"
+                return False
             record.status = "succeeded"
             record.finished_at = time.time()
             record.result = result
@@ -132,6 +142,7 @@ class _JobStore:
             record.progress = 1.0
             record.stage = "succeeded"
             record.updated_at = time.time()
+            return True
 
     def mark_failed(self, job_id: str, error: str) -> None:
         """Mark a job as failed and persist an error message."""
@@ -144,6 +155,50 @@ class _JobStore:
             record.progress = record.progress if record.progress > 0 else 0.0
             record.stage = "failed"
             record.updated_at = time.time()
+
+    def set_deadline(self, job_id: str, timeout_seconds: float) -> None:
+        """Attach a monotonic deadline used by response and worker paths."""
+        timeout = max(0.001, float(timeout_seconds))
+        with self._lock:
+            record = self._jobs[job_id]
+            record.deadline_monotonic = time.monotonic() + timeout
+
+    def request_cancel(self, job_id: str, reason: str) -> bool:
+        """Request cooperative cancellation and make the terminal state sticky."""
+        with self._lock:
+            record = self._jobs.get(job_id)
+            if record is None or record.status in ("succeeded", "failed"):
+                return False
+            record.cancel_requested = True
+            record.cancel_reason = reason or "Generation cancelled"
+            record.status = "failed"
+            record.finished_at = time.time()
+            record.result = None
+            record.error = record.cancel_reason
+            record.stage = "failed"
+            record.updated_at = time.time()
+            return True
+
+    def cancellation_reason(self, job_id: str) -> Optional[str]:
+        """Return cancellation reason and atomically expire elapsed deadlines."""
+        with self._lock:
+            record = self._jobs.get(job_id)
+            if record is None:
+                return "Generation job no longer exists"
+            if (
+                not record.cancel_requested
+                and record.deadline_monotonic is not None
+                and time.monotonic() >= record.deadline_monotonic
+            ):
+                record.cancel_requested = True
+                record.cancel_reason = "Generation deadline exceeded"
+                record.status = "failed"
+                record.finished_at = time.time()
+                record.result = None
+                record.error = record.cancel_reason
+                record.stage = "failed"
+                record.updated_at = time.time()
+            return record.cancel_reason if record.cancel_requested else None
 
     def update_progress(self, job_id: str, progress: float, stage: Optional[str] = None) -> None:
         """Update progress and optional stage for an existing job."""

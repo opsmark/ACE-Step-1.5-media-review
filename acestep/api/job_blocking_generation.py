@@ -132,6 +132,9 @@ def run_blocking_generate(
     last_progress = {"value": -1.0, "time": 0.0, "stage": ""}
 
     def _progress_cb(value: float, desc: str = "") -> None:
+        cancel_reason = store.cancellation_reason(job_id)
+        if cancel_reason is not None:
+            raise TimeoutError(cancel_reason)
         now = time.time()
         try:
             value_f = max(0.0, min(1.0, float(value)))

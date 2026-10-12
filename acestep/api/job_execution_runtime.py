@@ -48,7 +48,8 @@ async def run_one_job_runtime(
     executor = app_state.executor
 
     await ensure_models_initialized_fn(app_state)
-    job_store.mark_running(job_id)
+    if not job_store.mark_running(job_id):
+        raise TimeoutError(job_store.cancellation_reason(job_id) or "Generation cancelled")
     update_progress_job_cache_fn(
         app_state=app_state,
         store=store,
@@ -81,7 +82,11 @@ async def run_one_job_runtime(
     try:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(executor, _blocking_generate)
-        job_store.mark_succeeded(job_id, result)
+        reason = job_store.cancellation_reason(job_id)
+        if reason is not None:
+            raise TimeoutError(reason)
+        if not job_store.mark_succeeded(job_id, result):
+            raise TimeoutError(job_store.cancellation_reason(job_id) or "Generation cancelled")
         update_terminal_job_cache_fn(
             app_state=app_state,
             store=store,

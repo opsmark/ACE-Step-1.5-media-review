@@ -14,17 +14,7 @@ async def process_queue_item(
     run_one_job: Callable[[str, Any], Awaitable[None]],
     cleanup_job_temp_files: Callable[[str], Awaitable[None]],
 ) -> None:
-    """Process one queued job item and notify waiters.
-
-    Args:
-        job_id: Job identifier from queue.
-        req: Request payload associated with the job.
-        app_state: App state containing queue and pending-id synchronization.
-        store: Job store exposing `get(job_id)` and `mark_failed(job_id, error)`.
-        run_one_job: Async callable that executes one job.
-        cleanup_job_temp_files: Async callable to cleanup temporary upload files.
-    """
-
+    """Process one queued item, skipping jobs cancelled before GPU admission."""
     rec = store.get(job_id)
     try:
         async with app_state.pending_lock:
@@ -33,13 +23,19 @@ async def process_queue_item(
             except ValueError:
                 pass
 
-        await run_one_job(job_id, req)
+        cancellation_checker = getattr(store, "cancellation_reason", None)
+        reason = cancellation_checker(job_id) if callable(cancellation_checker) else None
+        if reason is None:
+            await run_one_job(job_id, req)
 
         if rec and rec.progress_queue:
             if rec.status == "succeeded" and rec.result:
                 await rec.progress_queue.put({"type": "result", "result": rec.result})
             elif rec.status == "failed":
-                await rec.progress_queue.put({"type": "error", "content": rec.error or "Generation failed"})
+                await rec.progress_queue.put({
+                    "type": "error",
+                    "content": rec.error or reason or "Generation failed",
+                })
             await rec.progress_queue.put({"type": "done"})
         if rec and rec.done_event:
             rec.done_event.set()

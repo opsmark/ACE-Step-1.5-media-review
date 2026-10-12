@@ -9,6 +9,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
+from acestep.api.generation_resource_policy import (
+    RequestBodyLimitMiddleware,
+    default_generation_path_limits,
+)
 from acestep.api.http.audio_route import register_audio_route
 from acestep.api.http.authenticated_router import include_authenticated_router
 from acestep.api.http.lora_routes import register_lora_routes
@@ -59,6 +63,11 @@ def configure_api_routes(
     create_sample: Callable[..., Any] = None,
 ) -> None:
     """Configure middleware, compatibility router, and all API route modules."""
+
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        path_limits=default_generation_path_limits(),
+    )
 
     app.add_middleware(
         CORSMiddleware,

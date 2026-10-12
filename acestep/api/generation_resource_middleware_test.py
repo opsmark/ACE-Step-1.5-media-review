@@ -22,7 +22,9 @@ class _Gpu:
     max_batch_size_without_lm = 4
 
 
-async def _exercise_middleware(*, path="/release_task", chunks=(), headers=(), limit=10):
+async def _exercise_middleware(
+    *, path="/release_task", chunks=(), headers=(), limit=10, limited_path="/release_task"
+):
     called = {"app": 0, "bytes": 0}
     sent = []
     pending = list(chunks)
@@ -46,7 +48,7 @@ async def _exercise_middleware(*, path="/release_task", chunks=(), headers=(), l
         await inner_send({"type": "http.response.start", "status": 204, "headers": []})
         await inner_send({"type": "http.response.body", "body": b""})
 
-    middleware = RequestBodyLimitMiddleware(app, path_limits={path: limit})
+    middleware = RequestBodyLimitMiddleware(app, path_limits={limited_path: limit})
     scope = {
         "type": "http",
         "method": "POST",

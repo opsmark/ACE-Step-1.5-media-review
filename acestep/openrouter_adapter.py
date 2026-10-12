@@ -26,6 +26,14 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 
+from acestep.api.generation_resource_policy import (
+    GenerationLimitError,
+    decode_audio_base64,
+    generation_timeout_seconds,
+    read_json_object_limited,
+    validate_openrouter_request,
+)
+
 from acestep.openrouter_models import (
     AudioConfig,
     ChatCompletionRequest,
@@ -43,7 +51,7 @@ MODEL_PREFIX = "acestep"
 DEFAULT_AUDIO_FORMAT = "mp3"
 
 # Generation timeout for non-streaming requests (seconds)
-GENERATION_TIMEOUT = int(os.environ.get("ACESTEP_GENERATION_TIMEOUT", "600"))
+GENERATION_TIMEOUT = generation_timeout_seconds()
 
 
 # =============================================================================
@@ -124,18 +132,25 @@ def _format_lm_content(result: Dict[str, Any]) -> str:
 
 
 def _base64_to_temp_file(b64_data: str, audio_format: str = "mp3") -> str:
-    """Save base64 audio data to temporary file."""
-    if "," in b64_data:
-        b64_data = b64_data.split(",", 1)[1]
-
-    audio_bytes = base64.b64decode(b64_data)
-    suffix = f".{audio_format}" if not audio_format.startswith(".") else audio_format
-    fd, path = tempfile.mkstemp(suffix=suffix, prefix="openrouter_audio_")
-    os.close(fd)
-
-    with open(path, "wb") as f:
-        f.write(audio_bytes)
-
+    """Decode bounded base64 audio and write it to a private temporary file."""
+    audio_format = audio_format.lower()
+    audio_bytes = decode_audio_base64(b64_data, audio_format)
+    fd, path = tempfile.mkstemp(suffix=f".{audio_format}", prefix="openrouter_audio_")
+    try:
+        with os.fdopen(fd, "wb") as file_obj:
+            file_obj.write(audio_bytes)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -146,24 +161,15 @@ class _AudioBlob(NamedTuple):
     format: str
 
 
-def _materialize_audio_files(
-    blobs: List[_AudioBlob],
-) -> List[str]:
-    """Write deferred audio blobs to temporary files.
-
-    Args:
-        blobs: Audio blobs extracted by _parse_messages.
-
-    Returns:
-        List of temp file paths (caller must ensure cleanup).
-    """
+def _materialize_audio_files(blobs: List[_AudioBlob]) -> List[str]:
+    """Write validated deferred audio blobs, rolling back on any failure."""
     paths: List[str] = []
-    for blob in blobs:
-        try:
-            path = _base64_to_temp_file(blob.data, blob.format)
-            paths.append(path)
-        except Exception:
-            pass
+    try:
+        for blob in blobs:
+            paths.append(_base64_to_temp_file(blob.data, blob.format))
+    except Exception:
+        _cleanup_temp_paths(paths)
+        raise
     return paths
 
 
@@ -474,15 +480,17 @@ async def _openrouter_stream_generator(
     rec: Any,
     model_id: str,
     audio_format: str,
+    *,
+    job_store: Any,
+    request: Optional[Request] = None,
+    timeout_seconds: Optional[float] = None,
 ):
-    """
-    SSE stream generator that reads from rec.progress_queue.
-
-    Yields heartbeat chunks every 2 seconds while waiting for the
-    queue worker to push the generation result.
-    """
+    """Stream one job with disconnect cancellation and a wall-clock deadline."""
     completion_id = _generate_completion_id()
     created_timestamp = int(time.time())
+    timeout = float(timeout_seconds if timeout_seconds is not None else GENERATION_TIMEOUT)
+    deadline = time.monotonic() + max(0.001, timeout)
+    terminal = False
 
     def _make_chunk(
         content: Optional[str] = None,
@@ -497,75 +505,91 @@ async def _openrouter_stream_generator(
             delta["content"] = content
         if audio is not None:
             delta["audio"] = audio
-
         chunk = {
             "id": completion_id,
             "object": "chat.completion.chunk",
             "created": created_timestamp,
             "model": model_id,
-            "choices": [{
-                "index": 0,
-                "delta": delta,
-                "finish_reason": finish_reason,
-            }],
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
         }
         return f"data: {json.dumps(chunk)}\n\n"
 
-    # Initial role chunk
+    async def _is_disconnected() -> bool:
+        if request is None:
+            return False
+        try:
+            return bool(await request.is_disconnected())
+        except Exception:
+            return False
+
     yield _make_chunk(role="assistant", content="")
     await asyncio.sleep(0)
 
-    # Wait for result with periodic heartbeats
-    while True:
-        try:
-            msg = await asyncio.wait_for(rec.progress_queue.get(), timeout=2.0)
-        except asyncio.TimeoutError:
-            yield _make_chunk(content=".")
-            await asyncio.sleep(0)
-            continue
+    try:
+        while True:
+            if await _is_disconnected():
+                job_store.request_cancel(rec.job_id, "Streaming client disconnected")
+                return
 
-        msg_type = msg.get("type")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                reason = f"Generation timed out after {timeout:g} seconds"
+                job_store.request_cancel(rec.job_id, reason)
+                yield _make_chunk(content=f"\n\nError: {reason}")
+                yield _make_chunk(finish_reason="error")
+                yield "data: [DONE]\n\n"
+                terminal = True
+                return
 
-        if msg_type == "done":
-            break
+            try:
+                msg = await asyncio.wait_for(
+                    rec.progress_queue.get(), timeout=min(2.0, remaining)
+                )
+            except asyncio.TimeoutError:
+                yield _make_chunk(content=".")
+                await asyncio.sleep(0)
+                continue
 
-        elif msg_type == "error":
-            yield _make_chunk(content=f"\n\nError: {msg.get('content', 'Unknown error')}")
-            yield _make_chunk(finish_reason="error")
-            yield "data: [DONE]\n\n"
-            return
+            msg_type = msg.get("type")
+            if msg_type == "done":
+                break
+            if msg_type == "error":
+                yield _make_chunk(content=f"\n\nError: {msg.get('content', 'Unknown error')}")
+                yield _make_chunk(finish_reason="error")
+                yield "data: [DONE]\n\n"
+                terminal = True
+                return
+            if msg_type != "result":
+                continue
 
-        elif msg_type == "result":
             result = msg.get("result", {})
-
-            # Send LM content
             lm_content = _format_lm_content(result)
             yield _make_chunk(content=f"\n\n{lm_content}")
             await asyncio.sleep(0)
 
-            # Send audio
             raw_audio_paths = result.get("raw_audio_paths", [])
             if raw_audio_paths:
                 audio_path = raw_audio_paths[0]
                 if audio_path and os.path.exists(audio_path):
                     b64_url = _audio_to_base64_url(audio_path, audio_format)
                     if b64_url:
-                        audio_list = [{
+                        yield _make_chunk(audio=[{
                             "type": "audio_url",
                             "audio_url": {"url": b64_url},
-                        }]
-                        yield _make_chunk(audio=audio_list)
+                        }])
                         await asyncio.sleep(0)
 
-            # Send audio_codes if available
             audio_codes = result.get("audio_codes")
             if audio_codes:
                 yield _make_chunk(content=f"\n\n[audio_codes]{audio_codes}[/audio_codes]")
                 await asyncio.sleep(0)
 
-    # Finish
-    yield _make_chunk(finish_reason="stop")
-    yield "data: [DONE]\n\n"
+        yield _make_chunk(finish_reason="stop")
+        yield "data: [DONE]\n\n"
+        terminal = True
+    finally:
+        if not terminal and await _is_disconnected():
+            job_store.request_cancel(rec.job_id, "Streaming client disconnected")
 
 
 # =============================================================================
@@ -667,12 +691,18 @@ def create_openrouter_router(app_state_getter) -> APIRouter:
                 detail=f"Model not initialized. init_error={getattr(state, '_init_error', None)}"
             )
 
-        # Parse request
+        # Bound the body before JSON/Pydantic materialization.
         try:
-            body = await request.json()
+            body = await read_json_object_limited(request)
             req = ChatCompletionRequest(**body)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid request format: {str(e)}")
+            validate_openrouter_request(
+                req,
+                lm_initialized=bool(getattr(state, "_llm_initialized", False)),
+            )
+        except GenerationLimitError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid request format: {exc}") from exc
 
         # Parse messages — audio is returned as deferred blobs,
         # no temp files are created yet.
@@ -720,19 +750,21 @@ def create_openrouter_router(app_state_getter) -> APIRouter:
             audio_config.format or DEFAULT_AUDIO_FORMAT
         )
 
-        # Create job record first so we have a job_id for
-        # cleanup registration.
+        # Materialize only validated, bounded blobs.  Roll back all files on
+        # decode/write failure before a durable job record is created.
+        try:
+            audio_paths = _materialize_audio_files(audio_blobs)
+        except GenerationLimitError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid input audio: {exc}") from exc
+
         job_store = state.job_store
         rec = job_store.create()
-
-        # Materialize audio blobs to temp files and register
-        # them for cleanup in one step — no leak window.
-        audio_paths = _materialize_audio_files(audio_blobs)
+        job_store.set_deadline(rec.job_id, GENERATION_TIMEOUT)
         if audio_paths:
             async with state.job_temp_files_lock:
-                state.job_temp_files.setdefault(
-                    rec.job_id, []
-                ).extend(audio_paths)
+                state.job_temp_files.setdefault(rec.job_id, []).extend(audio_paths)
 
         # Route audio paths based on task_type.
         reference_audio_path = None
@@ -792,7 +824,10 @@ def create_openrouter_router(app_state_getter) -> APIRouter:
             await job_queue.put((rec.job_id, gen_request))
 
             return StreamingResponse(
-                _openrouter_stream_generator(rec, req.model, audio_format),
+                _openrouter_stream_generator(
+                    rec, req.model, audio_format,
+                    job_store=job_store, request=request,
+                ),
                 media_type="text/event-stream",
             )
         else:
@@ -807,8 +842,10 @@ def create_openrouter_router(app_state_getter) -> APIRouter:
             # Wait for completion with timeout
             try:
                 await asyncio.wait_for(rec.done_event.wait(), timeout=GENERATION_TIMEOUT)
-            except asyncio.TimeoutError:
-                raise HTTPException(status_code=504, detail="Generation timeout")
+            except asyncio.TimeoutError as exc:
+                reason = f"Generation timed out after {GENERATION_TIMEOUT} seconds"
+                job_store.request_cancel(rec.job_id, reason)
+                raise HTTPException(status_code=504, detail=reason) from exc
 
             return _build_openrouter_response(rec, req.model, audio_format)
 
