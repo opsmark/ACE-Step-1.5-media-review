@@ -1,0 +1,189 @@
+name: Construct bounded audio ingress candidate
+
+on:
+  push:
+    branches:
+      - security/bounded-audio-ingress-20261012
+    paths:
+      - .github/workflows/audio-security-build.yml
+      - .ops-build/audio_patch_chunks/**
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bounded-audio-ingress-construction
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    if: github.actor != 'github-actions[bot]'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: security/bounded-audio-ingress-20261012
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Reconstruct and verify reviewed patch
+        shell: bash
+        run: |
+          python -c "from pathlib import Path; import base64,hashlib; files=sorted(Path('.ops-build/audio_patch_chunks').glob('chunk_*')); assert len(files)==7, files; encoded=b''.join(p.read_bytes() for p in files); patch=base64.b64decode(encoded, validate=True); actual=hashlib.sha256(patch).hexdigest(); assert actual=='8a317d75cb90d77104f24b1dff188cd6896bf49b899d83dcf0ddd92264cea77b', actual; Path('audio-security.patch').write_bytes(patch); print('patch_bytes',len(patch),'sha256',actual)"
+          git apply --check audio-security.patch
+          git apply audio-security.patch
+
+      - name: Run focused source and behavior checks
+        shell: bash
+        run: |
+          python acestep/core/generation/handler/audio_input_limits_test.py -v
+          python -m compileall -q \
+            acestep/acestep_v15_pipeline.py \
+            acestep/core/generation/handler/audio_input_limits.py \
+            acestep/core/generation/handler/io_audio.py \
+            acestep/ui/gradio/events/generation/validation.py \
+            acestep/core/generation/handler/audio_input_limits_test.py
+          git diff --check
+
+      - name: Exercise real WAV and ffprobe metadata paths
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check --no-input 'soundfile==0.13.1'
+          command -v ffmpeg
+          command -v ffprobe
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          ffmpeg -hide_banner -loglevel error -f lavfi -i 'sine=frequency=440:sample_rate=44100' -t 1 -c:a pcm_s16le "$tmpdir/tone.wav"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i 'sine=frequency=440:sample_rate=44100' -t 1 -c:a aac "$tmpdir/tone.m4a"
+          AUDIO_TEST_TMP="$tmpdir" python - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
+
+          path = Path('acestep/core/generation/handler/audio_input_limits.py')
+          spec = importlib.util.spec_from_file_location('audio_limits_real_integration', path)
+          module = importlib.util.module_from_spec(spec)
+          assert spec.loader is not None
+          spec.loader.exec_module(module)
+
+          root = Path(os.environ['AUDIO_TEST_TMP'])
+          wav = module.validate_audio_file_limits(str(root / 'tone.wav'))
+          assert wav.probe == 'soundfile', wav
+          assert wav.channels == 1
+          assert 0.9 <= wav.duration_seconds <= 1.1
+
+          original_info = module.sf.info
+          try:
+              module.sf.info = lambda _path: (_ for _ in ()).throw(RuntimeError('force ffprobe path'))
+              aac = module.validate_audio_file_limits(str(root / 'tone.m4a'))
+          finally:
+              module.sf.info = original_info
+          assert aac.probe == 'ffprobe', aac
+          assert aac.channels == 1
+          assert 0.9 <= aac.duration_seconds <= 1.2
+
+          tighter = module.AudioInputLimits(
+              max_file_bytes=module.ABSOLUTE_MAX_AUDIO_FILE_BYTES,
+              max_duration_seconds=0.5,
+              max_sample_rate=module.ABSOLUTE_MAX_AUDIO_SAMPLE_RATE,
+              max_channels=module.ABSOLUTE_MAX_AUDIO_CHANNELS,
+              max_decoded_samples=module.ABSOLUTE_MAX_DECODED_SAMPLES,
+          )
+          try:
+              module.validate_audio_file_limits(str(root / 'tone.wav'), tighter)
+          except module.AudioInputLimitError:
+              pass
+          else:
+              raise AssertionError('duration ceiling did not reject real WAV metadata')
+          print('REAL_AUDIO_METADATA_CANARY_PASS')
+          PY
+
+  seal:
+    if: github.actor != 'github-actions[bot]'
+    needs: qualify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: security/bounded-audio-ingress-20261012
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply exact qualified patch and seal branch
+        shell: bash
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          python -c "from pathlib import Path; import base64,hashlib; files=sorted(Path('.ops-build/audio_patch_chunks').glob('chunk_*')); assert len(files)==7, files; encoded=b''.join(p.read_bytes() for p in files); patch=base64.b64decode(encoded, validate=True); actual=hashlib.sha256(patch).hexdigest(); assert actual=='8a317d75cb90d77104f24b1dff188cd6896bf49b899d83dcf0ddd92264cea77b', actual; Path('audio-security.patch').write_bytes(patch)"
+          git apply --check audio-security.patch
+          git apply audio-security.patch
+          rm audio-security.patch
+
+          python acestep/core/generation/handler/audio_input_limits_test.py -v
+          python -m compileall -q \
+            acestep/acestep_v15_pipeline.py \
+            acestep/core/generation/handler/audio_input_limits.py \
+            acestep/core/generation/handler/io_audio.py \
+            acestep/ui/gradio/events/generation/validation.py \
+            acestep/core/generation/handler/audio_input_limits_test.py
+          git diff --check
+
+          mkdir -p docs/evidence
+          cat > docs/evidence/SECURITY_BOUNDED_AUDIO_INGRESS_QUALIFICATION_20261012.md <<EOF
+          # Bounded audio ingress qualification — 2026-10-12
+
+          Status: SOURCE_TESTED / CROSS_PLATFORM_FOCUSED / DRAFT / UNMERGED / UNDEPLOYED
+
+          Finding: Codex Security \`csf_d576fc10819cdf621fcc765a\` (uploaded audio fully decoded before any size or duration limit).
+
+          Frozen base: \`ca1e85fe9430179831e6bc6be790c332190a3866\`.
+          Reviewed patch SHA-256: \`8a317d75cb90d77104f24b1dff188cd6896bf49b899d83dcf0ddd92264cea77b\`.
+          GitHub Actions run: \`${RUN_ID}\`, attempt \`${RUN_ATTEMPT}\`.
+
+          ## Qualified behavior
+
+          - Gradio rejects uploads above the central byte ceiling before temporary-file storage.
+          - A central pre-decode policy limits file bytes, duration, sample rate, channels and decoded sample count; environment values may tighten but cannot widen compiled ceilings.
+          - \`soundfile.info\` is used for bounded metadata where supported; a shell-free, timed \`ffprobe\` argv fallback handles other containers.
+          - \`soundfile.read\` and \`torchaudio.load\` receive a one-frame-over ceiling, and actual decoder output plus projected stereo 48 kHz resampling are rechecked before copies/tensors/resampling.
+          - The UI clears rejected source/reference uploads with the existing localized invalid-audio warning instead of waiting for a full decode.
+          - Nineteen focused checks passed on CPython 3.11 under Ubuntu and Windows, with compilation and \`git diff --check\` passing on both.
+          - Ubuntu additionally exercised a real PCM WAV metadata path, a real AAC/ffprobe path, and a tightened duration refusal.
+
+          ## Preserved construction evidence
+
+          The first Base44 package-level unittest attempt imported optional PyTorch before reaching the focused module and failed because PyTorch was unavailable; it was not counted as a source failure or rewritten as a passing run. The isolated focused harness then exposed and corrected an undercount in projected resampling: mono is duplicated to stereo, so projected resampled samples must always budget two channels. The final focused run passed 19/19 before this cross-platform qualification.
+
+          ## Limits and receiving gate
+
+          This source branch is not merged or deployed. It did not run a real GPU generation, the target Windows installation, a production proxy, concurrent abusive uploads, every codec, retention/cleanup, per-principal quotas or operating-system enforcement. Metadata inspection and bounded decode substantially reduce the reported resource-amplification path but do not prove arbitrary media are benign or eliminate every codec/parser defect and time-of-check/time-of-use race.
+
+          Before merge/deployment: inventory legitimate current audio sizes/durations/rates/channels and any non-audio Gradio uploads affected by the global 256 MiB ingress ceiling; run the focused tests on the target supported environment; exercise normal source/reference/cover/repaint generation with trusted WAV/MP3/AAC/M4A inputs; verify over-limit refusal occurs before full decode, tensor allocation, resampling, model initialization or GPU work; test proxy/body ceilings and concurrent requests; preserve installed-source rollback; close the finding only after deployed runtime readback.
+          EOF
+
+          git rm -r .ops-build/audio_patch_chunks .github/workflows/audio-security-build.yml
+          git add \
+            acestep/acestep_v15_pipeline.py \
+            acestep/core/generation/handler/audio_input_limits.py \
+            acestep/core/generation/handler/audio_input_limits_test.py \
+            acestep/core/generation/handler/io_audio.py \
+            acestep/ui/gradio/events/generation/validation.py \
+            docs/evidence/SECURITY_BOUNDED_AUDIO_INGRESS_QUALIFICATION_20261012.md
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Security: bound audio uploads before decode'
+          git push origin HEAD:security/bounded-audio-ingress-20261012
