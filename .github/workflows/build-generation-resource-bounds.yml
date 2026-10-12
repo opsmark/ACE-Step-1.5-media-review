@@ -35,15 +35,19 @@ jobs:
         run: |
           python .github/scripts/repair_generation_resource_builder.py
           python .github/scripts/apply_generation_resource_bounds.py
+          python .github/scripts/augment_generation_resource_integrations.py
 
       - name: Compile changed sources
         run: |
           python -m compileall -q \
             acestep/api/generation_resource_policy.py \
             acestep/api/generation_resource_policy_test.py \
+            acestep/api/generation_resource_middleware_test.py \
             acestep/openrouter_models.py \
             acestep/openrouter_adapter.py \
             acestep/api/http/release_task_models.py \
+            acestep/api/http/release_task_route.py \
+            acestep/api/route_setup.py \
             acestep/api/jobs/store.py \
             acestep/api/jobs/worker_loops.py \
             acestep/api/job_execution_runtime.py \
@@ -56,6 +60,7 @@ jobs:
           set -o pipefail
           python -m unittest -v \
             acestep.api.generation_resource_policy_test \
+            acestep.api.generation_resource_middleware_test \
             acestep.api.http.authenticated_router_test \
             acestep.api.server_cli_test \
             acestep.api.jobs.store_test \
@@ -68,6 +73,8 @@ jobs:
           grep -n 'read_json_object_limited(request)' acestep/openrouter_adapter.py
           grep -n 'validate_openrouter_request' acestep/openrouter_adapter.py
           grep -n 'request_cancel' acestep/openrouter_adapter.py
+          grep -n 'RequestBodyLimitMiddleware' acestep/api/route_setup.py
+          grep -n 'validate_generate_request' acestep/api/http/release_task_route.py
           grep -n 'await _read_api_payload(request)' acestep/ui/gradio/api/api_routes.py
           grep -n 'LIMITS.max_duration_seconds' acestep/core/generation/handler/task_utils.py
           ! grep -n 'body = await request.json()' acestep/openrouter_adapter.py
@@ -81,6 +88,7 @@ jobs:
       - name: Seal candidate without one-shot builders
         run: |
           rm -f .github/scripts/apply_generation_resource_bounds.py
+          rm -f .github/scripts/augment_generation_resource_integrations.py
           rm -f .github/scripts/repair_generation_resource_builder.py
           rm -f .github/scripts/write_generation_resource_receipt.py
           rm -f .github/workflows/build-generation-resource-bounds.yml
