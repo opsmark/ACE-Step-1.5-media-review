@@ -1,0 +1,97 @@
+name: Requalify OpenRouter admission boundaries
+
+on:
+  push:
+    branches:
+      - security/generation-resource-bounds-20261012
+
+permissions:
+  contents: write
+
+jobs:
+  admission-requalify:
+    if: ${{ !contains(github.event.head_commit.message, '[openrouter-admission-qualified]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out candidate branch
+        uses: actions/checkout@v4
+        with:
+          ref: security/generation-resource-bounds-20261012
+          fetch-depth: 0
+
+      - name: Set up supported Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install focused test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check \
+            'pydantic>=2,<3' 'fastapi>=0.110' 'starlette>=0.36' \
+            'loguru>=0.7' 'uvicorn>=0.27' 'httpx>=0.27' 'python-multipart>=0.0.18'
+
+      - name: Apply compatibility and admission transforms
+        run: |
+          python .github/scripts/harden_openrouter_admission.py
+          python .github/scripts/harden_prequeue_cancellation.py
+
+      - name: Compile changed sources
+        run: |
+          python -m compileall -q \
+            acestep/api/http/release_task_models.py \
+            acestep/api/lifespan_runtime.py \
+            acestep/api/jobs/store.py \
+            acestep/openrouter_adapter.py \
+            acestep/api/openrouter_admission_test.py
+
+      - name: Run focused and parent checks
+        run: |
+          set -o pipefail
+          python -m unittest -v \
+            acestep.api.openrouter_admission_test \
+            acestep.api.generation_resource_policy_test \
+            acestep.api.generation_resource_middleware_test \
+            acestep.api.http.authenticated_router_test \
+            acestep.api.server_cli_test \
+            acestep.api.jobs.store_test \
+            acestep.api.jobs.worker_loops_test \
+            2>&1 | tee /tmp/openrouter-admission-requalification.txt
+
+      - name: Verify candidate shape and repository hygiene
+        run: |
+          git diff --check
+          grep -n 'openrouter_prequeue_lock = asyncio.Lock()' acestep/api/lifespan_runtime.py
+          grep -n 'async def _run_prequeue_cover_conversion' acestep/openrouter_adapter.py
+          grep -n 'async def _admit_openrouter_job' acestep/openrouter_adapter.py
+          grep -n 'queue_ref.put_nowait' acestep/openrouter_adapter.py
+          grep -n 'discard_unsubmitted' acestep/api/jobs/store.py
+          grep -n 'validate_audio_duration_sentinel' acestep/api/http/release_task_models.py
+          python - <<'PY'
+          from pathlib import Path
+          source = Path('acestep/openrouter_adapter.py').read_text(encoding='utf-8')
+          route_at = source.index('async def chat_completions')
+          lock_at = source.index('async with prequeue_lock', route_at)
+          materialize_at = source.index('_materialize_audio_files(audio_blobs)', lock_at)
+          conversion_at = source.index('_run_prequeue_cover_conversion(', materialize_at)
+          admission_at = source.index('_admit_openrouter_job(', conversion_at)
+          assert lock_at < materialize_at < conversion_at < admission_at
+          PY
+
+      - name: Replace qualification receipt
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: python .github/scripts/write_openrouter_admission_requalification.py /tmp/openrouter-admission-requalification.txt
+
+      - name: Seal admission candidate without one-shot files
+        run: |
+          rm -f .github/scripts/harden_openrouter_admission.py
+          rm -f .github/scripts/harden_prequeue_cancellation.py
+          rm -f .github/scripts/write_openrouter_admission_requalification.py
+          rm -f .github/workflows/requalify-openrouter-admission.yml
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m '[openrouter-admission-qualified] Roll back unpublished work and preserve auto duration'
+          git push origin HEAD:security/generation-resource-bounds-20261012
