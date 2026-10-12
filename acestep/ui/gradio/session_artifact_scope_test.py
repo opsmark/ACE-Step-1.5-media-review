@@ -102,10 +102,8 @@ class SessionArtifactScopeTests(unittest.TestCase):
 
             self.assertNotEqual(scope_a, scope_b)
             self.assertNotEqual(Path(batch_a).parent, Path(batch_b).parent)
-            self.assertEqual(
-                os.path.realpath(audio_a),
-                scope_module.authorize_session_artifact_path(audio_a, scope_a),
-            )
+            authorized = scope_module.authorize_session_artifact_path(audio_a, scope_a)
+            self.assertTrue(os.path.samefile(audio_a, authorized))
             with self.assertRaises(SessionArtifactAccessError):
                 scope_module.authorize_session_artifact_path(audio_b, scope_a)
 
@@ -146,7 +144,7 @@ class SessionArtifactScopeTests(unittest.TestCase):
                 scope_module.session_artifact_root("../other", create=True)
 
     def test_symlink_escape_is_refused(self) -> None:
-        """A symlink inside a session cannot redirect access outside its root."""
+        """A link/reparse point inside a session cannot redirect outside its root."""
 
         with _isolated_roots() as (tmp, _results, _sessions):
             scope, batch = scope_module.allocate_session_batch_directory(None)
@@ -189,7 +187,7 @@ class SessionArtifactScopeTests(unittest.TestCase):
                 None,
             )
 
-            self.assertEqual(os.path.realpath(dataset_audio), resolved)
+            self.assertTrue(os.path.samefile(dataset_audio, resolved))
             self.assertFalse(scope_module.is_managed_artifact_path(dataset_audio))
 
 

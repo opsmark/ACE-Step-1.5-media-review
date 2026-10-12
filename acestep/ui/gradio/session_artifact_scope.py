@@ -157,19 +157,29 @@ def _ensure_managed_directory(path: str) -> None:
     _assert_directory_without_symlink(path)
 
 
+def _stat_is_link_or_reparse(info: os.stat_result) -> bool:
+    """Recognize POSIX symlinks and Windows reparse points without following them."""
+
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    attributes = getattr(info, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(reparse_flag and attributes & reparse_flag)
+
+
 def _assert_directory_without_symlink(path: str) -> None:
-    """Require ``path`` to be a real directory rather than a symlink."""
+    """Require ``path`` to be a real directory rather than a link/reparse point."""
 
     try:
-        mode = os.lstat(path).st_mode
+        info = os.lstat(path)
     except OSError as exc:
         raise SessionArtifactAccessError(f"Cannot inspect managed directory: {path}") from exc
-    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+    if _stat_is_link_or_reparse(info) or not stat.S_ISDIR(info.st_mode):
         raise SessionArtifactAccessError(f"Unsafe managed directory: {path}")
 
 
 def _assert_no_symlink_components(root: str, path: str) -> None:
-    """Reject symlink components between the session root and target path."""
+    """Reject link or reparse-point components between the root and target."""
 
     relative = os.path.relpath(path, root)
     if relative == os.pardir or relative.startswith(os.pardir + os.sep):
@@ -179,8 +189,16 @@ def _assert_no_symlink_components(root: str, path: str) -> None:
         current = os.path.join(current, part)
         if not os.path.lexists(current):
             break
-        if stat.S_ISLNK(os.lstat(current).st_mode):
-            raise SessionArtifactAccessError("Symlinks are not allowed in session artifacts")
+        try:
+            info = os.lstat(current)
+        except OSError as exc:
+            raise SessionArtifactAccessError(
+                f"Cannot inspect managed artifact component: {current}"
+            ) from exc
+        if _stat_is_link_or_reparse(info):
+            raise SessionArtifactAccessError(
+                "Links and reparse points are not allowed in session artifacts"
+            )
 
 
 def _absolute(path: str | os.PathLike[str]) -> str:
