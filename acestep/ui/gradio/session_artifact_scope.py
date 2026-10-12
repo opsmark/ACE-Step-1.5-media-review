@@ -107,13 +107,18 @@ def allocate_session_batch_directory(scope: str | None) -> tuple[str, str]:
 
 
 def is_managed_artifact_path(path: str | os.PathLike[str]) -> bool:
-    """Return whether a path is inside the application's generated-output tree."""
+    """Return whether a path is inside any lexical/canonical output-root alias."""
 
     raw = _absolute(path)
     resolved = os.path.realpath(raw)
-    return _contains(raw, os.path.abspath(DEFAULT_RESULTS_DIR)) or _contains(
-        resolved,
+    roots = (
+        os.path.abspath(DEFAULT_RESULTS_DIR),
         os.path.realpath(DEFAULT_RESULTS_DIR),
+    )
+    return any(
+        _contains(candidate, root)
+        for candidate in (raw, resolved)
+        for root in roots
     )
 
 
