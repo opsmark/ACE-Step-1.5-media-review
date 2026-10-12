@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from acestep.constants import DEFAULT_DIT_INSTRUCTION
 from acestep.api.generation_resource_policy import LIMITS
@@ -61,7 +61,7 @@ class GenerateMusicRequest(BaseModel):
     reference_audio_path: Optional[str] = None
     src_audio_path: Optional[str] = None
     audio_duration: Optional[float] = Field(
-        default=None, gt=0, le=LIMITS.max_duration_seconds
+        default=None, ge=-1, le=LIMITS.max_duration_seconds
     )
     batch_size: Optional[int] = Field(
         default=None, ge=1, le=LIMITS.max_batch_size
@@ -161,6 +161,14 @@ class GenerateMusicRequest(BaseModel):
     lm_negative_prompt: str = Field(
         default="NO USER INPUT", max_length=LIMITS.max_prompt_chars
     )
+
+    @field_validator("audio_duration")
+    @classmethod
+    def validate_audio_duration_sentinel(cls, value: Optional[float]) -> Optional[float]:
+        """Accept only omitted, positive, or the documented -1 auto sentinel."""
+        if value is None or value == -1 or value > 0:
+            return value
+        raise ValueError("audio_duration must be -1 (auto) or greater than zero")
 
     class Config:
         """Legacy pydantic config preserving prior population semantics."""

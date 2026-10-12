@@ -93,6 +93,15 @@ class _JobStore:
             self._jobs[job_id] = record
         return record
 
+    def discard_unsubmitted(self, record: _JobRecord) -> bool:
+        """Undo failed admission without removing replacements or running work."""
+        with self._lock:
+            current = self._jobs.get(record.job_id)
+            if current is not record or current.status != "queued":
+                return False
+            del self._jobs[record.job_id]
+            return True
+
     def create_with_id(self, job_id: str, env: str = "development") -> _JobRecord:
         """Create and register a queued job using a caller-provided ID."""
         now = time.time()

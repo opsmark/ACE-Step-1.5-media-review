@@ -1,45 +1,58 @@
 # Generation resource boundary qualification — 2026-10-12
 
-Status: SOURCE_TESTED / RED_TEAM_REQUALIFIED / STACKED_ON_PR_1 / DRAFT / UNMERGED / UNDEPLOYED
+Status: SOURCE_TESTED / RED_TEAM_REQUALIFIED / ADMISSION_REQUALIFIED / STACKED_ON_PR_1 / DRAFT / UNMERGED / UNDEPLOYED
 
 Base revision: 1bb0cf9d1356c9153459e4572210c6a6b2d8d963
-Initial green qualification: GitHub Actions run 38218516390
-Red-team requalification: GitHub Actions run 38218899974
+First green qualification: GitHub Actions run 38218516390
+Framing/cancellation red-team requalification: GitHub Actions run 38218899974
+OpenRouter admission requalification: GitHub Actions run 38219548495
 Python: 3.11.17
 
 ## Candidate boundary
 
-The candidate bounds declared and chunked generation bodies before FastAPI/Pydantic route parsing, rejects conflicting Content-Length framing, normalizes a single trailing slash for protected generation routes, rejects over-budget text/base64 before temporary files or model work, intersects duration and batch size with the active GPU tier and absolute ceilings, caps inference steps, seed fan-out, custom timesteps and track-class collections, and constrains the custom Gradio generation payload.
+The candidate bounds declared and chunked generation bodies before FastAPI/Pydantic route parsing; rejects conflicting Content-Length framing and trailing-slash bypasses; constrains text, base64 audio, custom timesteps, track classes, duration, batch size, inference steps and seed fan-out; and intersects absolute ceilings with the active hardware tier. The documented `-1` automatic-duration sentinel remains compatible while zero and every other explicit non-positive duration are rejected.
 
-Streaming and non-streaming OpenRouter jobs receive the same bounded deadline. Timeout and disconnect cancellation are terminal in the job store, cannot be overwritten by later exception/progress paths, skip work that has not reached model initialization, and are rechecked after initialization and from generation progress callbacks. Core duration and batch-size checks remain as defense in depth.
+OpenRouter preprocessing is serialized per process before decode/file creation and cover-code conversion, then published atomically to the existing shared queue under the maintained pending/temp lock order. Full/racing queues, deadline setup errors, parser failures and cancellation before admission remove request-owned files, pending metadata and the exact unsubmitted job record. A started cover-conversion thread is shielded from request cancellation and awaited before cancellation propagates, preventing repeated disconnects from escaping the prequeue concurrency bound.
+
+Streaming and non-streaming jobs share the same bounded deadline. Timeout/disconnect cancellation is terminal in the store, cannot be overwritten by later exception/progress paths, skips work cancelled before model initialization, and is rechecked after initialization and from progress callbacks. Core duration and batch-size checks remain defense in depth.
 
 ## Preserved negative evidence and corrections
 
-- Run 38217731578 exposed invalid workflow YAML before any source candidate was promoted.
-- Run 38217812125 exposed an incomplete parser-transform count.
-- Run 38217948420 passed the new focused policy tests but failed two parent worker-loop tests because the first integration assumed every test store implemented cancellation.
-- Run 38218075738 exposed a faulty repair-script target before source transformation.
-- Run 38218439703 passed 56 of 57 checks; its sole failure was a test-harness error that accidentally configured the supposedly unrelated path as protected.
-- Run 38218516390 passed 57 of 57 checks and sealed the first source candidate.
-- Post-seal red-team review found that cancellation was checked after model initialization, a later failure could overwrite the cancellation reason, duplicate Content-Length values were collapsed, and a trailing slash could miss the exact-path body limit. This requalification repairs and tests those cases rather than relabeling the first candidate as final.
+- Run 38217731578: invalid workflow YAML; no source candidate promoted.
+- Run 38217812125: incomplete parser-transform count.
+- Run 38217948420: focused checks passed but parent worker tests exposed an assumption about minimal stores.
+- Run 38218075738: faulty repair-script target.
+- Run 38218439703: 56/57; a test harness accidentally protected its supposed unrelated path.
+- Run 38218516390: 57/57 first green candidate.
+- Post-green review found cancellation ordering/state and request-framing gaps; run 38218899974 requalified those repairs at 63/63.
+- Post-PR review then found an explicit `-1` duration compatibility regression plus pre-admission temp-file/job leakage and unbounded concurrent cover conversion. This run qualifies those corrections rather than treating the earlier green state as final.
 
 ## Focused and parent test output
 
 ```text
-/opt/hostedtoolcache/Python/3.11.17/x64/lib/python3.11/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
-  from starlette.testclient import TestClient as TestClient  # noqa
-test_16_cancelled_job_cannot_be_promoted_to_success (acestep.api.generation_resource_policy_test.CancellationAndSourceIntegrationTests.test_16_cancelled_job_cannot_be_promoted_to_success) ... ok
-test_17_expired_deadline_is_observed_by_worker_thread (acestep.api.generation_resource_policy_test.CancellationAndSourceIntegrationTests.test_17_expired_deadline_is_observed_by_worker_thread) ... ok
-test_18_queue_worker_skips_cancelled_queued_job (acestep.api.generation_resource_policy_test.CancellationAndSourceIntegrationTests.test_18_queue_worker_skips_cancelled_queued_job) ... ok
-test_19_stream_timeout_requests_job_cancellation (acestep.api.generation_resource_policy_test.CancellationAndSourceIntegrationTests.test_19_stream_timeout_requests_job_cancellation) ... /home/runner/work/ACE-Step-1.5-media-review/ACE-Step-1.5-media-review/acestep/openrouter_models.py:71: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.14/migration/
-  class ChatCompletionRequest(BaseModel):
-ok
-test_20_pydantic_request_models_declare_hard_caps (acestep.api.generation_resource_policy_test.CancellationAndSourceIntegrationTests.test_20_pydantic_request_models_declare_hard_caps) ... /home/runner/work/ACE-Step-1.5-media-review/ACE-Step-1.5-media-review/acestep/api/http/release_task_models.py:13: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.14/migration/
-  class GenerateMusicRequest(BaseModel):
 /opt/hostedtoolcache/Python/3.11.17/x64/lib/python3.11/site-packages/pydantic/_internal/_config.py:408: UserWarning: Valid config keys have changed in V2:
 * 'allow_population_by_field_name' has been renamed to 'validate_by_name'
   warnings.warn(message, UserWarning)
-ok
+/opt/hostedtoolcache/Python/3.11.17/x64/lib/python3.11/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+test_11_lifespan_installs_one_openrouter_prequeue_lock (acestep.api.openrouter_admission_test.AdmissionSourceIntegrationTests.test_11_lifespan_installs_one_openrouter_prequeue_lock) ... ok
+test_12_prequeue_lock_precedes_audio_materialization_and_conversion (acestep.api.openrouter_admission_test.AdmissionSourceIntegrationTests.test_12_prequeue_lock_precedes_audio_materialization_and_conversion) ... ok
+test_13_admission_uses_nonblocking_put_and_shared_lock_order (acestep.api.openrouter_admission_test.AdmissionSourceIntegrationTests.test_13_admission_uses_nonblocking_put_and_shared_lock_order) ... ok
+test_08_documented_negative_one_auto_duration_is_preserved (acestep.api.openrouter_admission_test.DurationSentinelCompatibilityTests.test_08_documented_negative_one_auto_duration_is_preserved) ... ok
+test_09_zero_and_other_negative_durations_are_rejected (acestep.api.openrouter_admission_test.DurationSentinelCompatibilityTests.test_09_zero_and_other_negative_durations_are_rejected) ... ok
+test_10_positive_duration_ceiling_is_preserved (acestep.api.openrouter_admission_test.DurationSentinelCompatibilityTests.test_10_positive_duration_ceiling_is_preserved) ... ok
+test_01_success_publishes_queue_and_metadata_together (acestep.api.openrouter_admission_test.OpenRouterAdmissionTests.test_01_success_publishes_queue_and_metadata_together) ... ok
+test_02_nonstreaming_admission_sets_done_event (acestep.api.openrouter_admission_test.OpenRouterAdmissionTests.test_02_nonstreaming_admission_sets_done_event) ... ok
+test_03_full_queue_rejects_before_record_and_cleans_file (acestep.api.openrouter_admission_test.OpenRouterAdmissionTests.test_03_full_queue_rejects_before_record_and_cleans_file) ... ok
+test_04_put_nowait_race_rolls_back_every_side_effect (acestep.api.openrouter_admission_test.OpenRouterAdmissionTests.test_04_put_nowait_race_rolls_back_every_side_effect) ... ok
+test_05_failure_after_record_creation_discards_record_and_file (acestep.api.openrouter_admission_test.OpenRouterAdmissionTests.test_05_failure_after_record_creation_discards_record_and_file) ... ok
+test_06_cancelled_conversion_waits_for_started_thread (acestep.api.openrouter_admission_test.OpenRouterAdmissionTests.test_06_cancelled_conversion_waits_for_started_thread) ... ok
+test_07_discard_unsubmitted_has_identity_and_state_guards (acestep.api.openrouter_admission_test.OpenRouterAdmissionTests.test_07_discard_unsubmitted_has_identity_and_state_guards) ... ok
+test_16_cancelled_job_cannot_be_promoted_to_success (acestep.api.generation_resource_policy_test.CancellationAndSourceIntegrationTests.test_16_cancelled_job_cannot_be_promoted_to_success) ... ok
+test_17_expired_deadline_is_observed_by_worker_thread (acestep.api.generation_resource_policy_test.CancellationAndSourceIntegrationTests.test_17_expired_deadline_is_observed_by_worker_thread) ... ok
+test_18_queue_worker_skips_cancelled_queued_job (acestep.api.generation_resource_policy_test.CancellationAndSourceIntegrationTests.test_18_queue_worker_skips_cancelled_queued_job) ... ok
+test_19_stream_timeout_requests_job_cancellation (acestep.api.generation_resource_policy_test.CancellationAndSourceIntegrationTests.test_19_stream_timeout_requests_job_cancellation) ... ok
+test_20_pydantic_request_models_declare_hard_caps (acestep.api.generation_resource_policy_test.CancellationAndSourceIntegrationTests.test_20_pydantic_request_models_declare_hard_caps) ... ok
 test_21_core_duration_allocator_has_defense_in_depth_cap (acestep.api.generation_resource_policy_test.CancellationAndSourceIntegrationTests.test_21_core_duration_allocator_has_defense_in_depth_cap) ... ok
 test_22_openrouter_reads_bounded_body_before_model_parse (acestep.api.generation_resource_policy_test.CancellationAndSourceIntegrationTests.test_22_openrouter_reads_bounded_body_before_model_parse) ... ok
 test_23_custom_api_uses_bounded_reader_and_validates_work (acestep.api.generation_resource_policy_test.CancellationAndSourceIntegrationTests.test_23_custom_api_uses_bounded_reader_and_validates_work) ... ok
@@ -117,7 +130,7 @@ test_run_job_store_cleanup_loop_logs_errors_and_continues (acestep.api.jobs.work
 Cleanup loop should log non-cancel exceptions and continue until cancelled. ... ok
 
 ----------------------------------------------------------------------
-Ran 63 tests in 0.171s
+Ran 76 tests in 0.170s
 
 OK
 Using preferred download source: huggingface
@@ -129,16 +142,18 @@ Using preferred download source: huggingface
 
 ## Important limits
 
-This is an isolated source candidate. It does not merge or deploy either this branch or PR 1, close the scanner finding, load a real model, exercise a GPU, prove Windows/ASGI-server behavior, impose per-principal rate quotas, or hard-stop a native kernel that never returns or invokes a progress callback. Cooperative cancellation prevents late success publication and stops at the next checked boundary; it is not an operating-system process kill. Audio decompression-bomb handling, media retention/session isolation, authentication-before-body-read and downstream proxy limits remain separately owned findings or layers.
+This remains an isolated source candidate. It does not merge or deploy this branch or PR 1, close the scanner finding, load a real model, exercise a GPU, prove Windows/ASGI/proxy behavior, impose per-principal rate quotas, or hard-stop a native kernel that never returns or invokes a progress callback. Cooperative cancellation prevents late success publication and stops at the next checked boundary; it is not an operating-system process kill.
 
-The 64 MiB request ceiling is a hard maximum; environment configuration may only tighten it. Compatibility should be reviewed for clients that require more than two input audio parts, unusually long lyrics/audio codes/custom timesteps, more than 64 track classes, batch size above 8, or more than 200 inference steps.
+The OpenRouter prequeue lock deliberately serializes cover-code conversion before admission. If that conversion itself hangs indefinitely, later OpenRouter preprocessing waits rather than creating unbounded conversion threads. Native/model-specific cancellation and timeout require target-runtime qualification. Audio decompression-bomb handling, media retention/session isolation, authentication-before-body-read and downstream proxy ceilings remain separately owned layers or findings.
+
+The branch duplicates only the identity/state-guarded `discard_unsubmitted` primitive already proposed by PR 2 so OpenRouter can roll back its own unpublished jobs. Rebase after PR 2 should keep one identical primitive and its broader `/release_task` admission treatment.
 
 ## Receiving gate
 
-1. Land/rebase after PR 1 authentication and rerun the full suite on the declared Windows/Python environment.
-2. Exercise JSON, urlencoded and multipart ingress with Content-Length, duplicate/conflicting headers, trailing slashes and chunked bodies immediately below/above each limit.
-3. Generate a normal short track, a supported long track, cover/repaint inputs, streaming output, a disconnected stream, a queued deadline and a deadline during model initialization using real local weights.
-4. Confirm over-limit requests fail before temp-file creation, audio decode, queue admission, model selection or GPU allocation.
-5. Confirm timed-out running work stops at the next cooperative progress boundary and cannot overwrite the failed terminal state even when the executor later returns.
-6. Inventory legitimate clients affected by the tightened factors before merge and document any reviewed migration; do not widen a hard cap merely to preserve an unknown caller.
-7. Preserve the prior installed source and do not close the finding until both embedded OpenRouter and custom Gradio routes are deployed and retested on the target host.
+1. Land/rebase after PR 1 authentication and reconcile the identical store primitive plus `/release_task` behavior from PR 2.
+2. Run the full suite on the declared Windows/Python target, including actual ASGI server and proxy framing behavior.
+3. Exercise JSON, urlencoded and multipart ingress immediately below/at/above limits, with conflicting lengths, chunked transfer and trailing slashes.
+4. Generate normal short/long tracks, cover/repaint inputs, streaming output, client disconnects, a queue-full race, queued deadlines and a deadline during model initialization using trusted local weights.
+5. Confirm every pre-admission failure leaves no request temp file, pending ID, temp registry entry or job record, and that admitted files survive until worker cleanup.
+6. Confirm a cancelled cover conversion does not permit a second conversion to escape the one-at-a-time prequeue bound.
+7. Inventory legitimate clients affected by the tightened contract, preserve installed-source rollback, and close the finding only after deployed runtime retest with actual receipts.

@@ -182,6 +182,82 @@ def _cleanup_temp_paths(paths: List[str]) -> None:
             pass
 
 
+async def _run_prequeue_cover_conversion(handler: Any, src_audio_path: str) -> Any:
+    """Keep the prequeue bound held until a started conversion thread exits.
+
+    ``asyncio.to_thread`` cannot terminate a running Python/native thread when
+    its awaiting request is cancelled. Waiting for that thread before
+    propagating cancellation prevents repeated disconnects from creating an
+    unbounded set of pre-admission conversion workers.
+    """
+    conversion = asyncio.create_task(
+        asyncio.to_thread(handler.convert_src_audio_to_codes, src_audio_path)
+    )
+    try:
+        return await asyncio.shield(conversion)
+    except asyncio.CancelledError:
+        while not conversion.done():
+            try:
+                await asyncio.shield(conversion)
+            except asyncio.CancelledError:
+                continue
+        try:
+            conversion.result()
+        except BaseException:
+            pass
+        raise
+
+
+async def _admit_openrouter_job(
+    state: Any,
+    job_store: Any,
+    gen_request: Any,
+    audio_paths: List[str],
+    *,
+    streaming: bool,
+):
+    """Atomically publish one prepared OpenRouter job or roll it back fully."""
+    queue_ref: asyncio.Queue = state.job_queue
+    record = None
+    admitted = False
+    try:
+        # Match the maintained release-task lock order. There is no await from
+        # the capacity recheck through put_nowait on this event loop.
+        async with state.pending_lock:
+            async with state.job_temp_files_lock:
+                if queue_ref.full():
+                    raise HTTPException(status_code=429, detail="Server busy: queue is full")
+
+                record = job_store.create()
+                try:
+                    job_store.set_deadline(record.job_id, GENERATION_TIMEOUT)
+                    if streaming:
+                        record.progress_queue = asyncio.Queue()
+                    else:
+                        record.done_event = asyncio.Event()
+                    if audio_paths:
+                        state.job_temp_files[record.job_id] = list(audio_paths)
+                    state.pending_ids.append(record.job_id)
+                    queue_ref.put_nowait((record.job_id, gen_request))
+                    admitted = True
+                except BaseException as exc:
+                    try:
+                        state.pending_ids.remove(record.job_id)
+                    except ValueError:
+                        pass
+                    state.job_temp_files.pop(record.job_id, None)
+                    job_store.discard_unsubmitted(record)
+                    if isinstance(exc, asyncio.QueueFull):
+                        raise HTTPException(
+                            status_code=429, detail="Server busy: queue is full"
+                        ) from exc
+                    raise
+        return record
+    finally:
+        if not admitted:
+            _cleanup_temp_paths(audio_paths)
+
+
 def _extract_tagged_content(text: str) -> Tuple[Optional[str], Optional[str], str]:
     """
     Extract content from <prompt> and <lyrics> tags.
@@ -736,109 +812,97 @@ def create_openrouter_router(app_state_getter) -> APIRouter:
                 ),
             )
 
-        # Check queue capacity — still no temp files on disk.
+        # Serialize only bounded OpenRouter preprocessing. Admitted work still
+        # uses the existing shared GPU queue and worker lifecycle.
         job_queue = state.job_queue
-        if job_queue.full():
-            raise HTTPException(
-                status_code=429,
-                detail="Server busy: queue is full",
-            )
+        prequeue_lock = getattr(state, "openrouter_prequeue_lock", None)
+        if prequeue_lock is None:
+            raise HTTPException(status_code=503, detail="OpenRouter admission is unavailable")
 
-        # Get audio format
         audio_config = req.audio_config or AudioConfig()
-        audio_format = (
-            audio_config.format or DEFAULT_AUDIO_FORMAT
-        )
-
-        # Materialize only validated, bounded blobs.  Roll back all files on
-        # decode/write failure before a durable job record is created.
+        audio_format = audio_config.format or DEFAULT_AUDIO_FORMAT
+        audio_paths: List[str] = []
+        rec = None
         try:
-            audio_paths = _materialize_audio_files(audio_blobs)
-        except GenerationLimitError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid input audio: {exc}") from exc
+            async with prequeue_lock:
+                # Recheck before any decode, file write, or cover conversion.
+                if job_queue.full():
+                    raise HTTPException(status_code=429, detail="Server busy: queue is full")
 
-        job_store = state.job_store
-        rec = job_store.create()
-        job_store.set_deadline(rec.job_id, GENERATION_TIMEOUT)
-        if audio_paths:
-            async with state.job_temp_files_lock:
-                state.job_temp_files.setdefault(rec.job_id, []).extend(audio_paths)
+                audio_paths = _materialize_audio_files(audio_blobs)
+                reference_audio_path = None
+                src_audio_path = None
+                src_audio_task_types = {
+                    "cover", "cover-nofsq", "repaint", "lego",
+                    "extract", "complete",
+                }
+                if audio_paths:
+                    if req.task_type in src_audio_task_types:
+                        src_audio_path = audio_paths[0]
+                        if len(audio_paths) > 1:
+                            reference_audio_path = audio_paths[1]
+                    else:
+                        reference_audio_path = audio_paths[0]
 
-        # Route audio paths based on task_type.
-        reference_audio_path = None
-        src_audio_path = None
-        _SRC_AUDIO_TASK_TYPES = {
-            "cover", "cover-nofsq", "repaint", "lego",
-            "extract", "complete",
-        }
-        if audio_paths:
-            if req.task_type in _SRC_AUDIO_TASK_TYPES:
-                src_audio_path = audio_paths[0]
-                if len(audio_paths) > 1:
-                    reference_audio_path = audio_paths[1]
-            else:
-                reference_audio_path = audio_paths[0]
+                # Preserve the existing cover compatibility behavior, but cap
+                # concurrent pre-queue conversion at one per process.
+                resolved_audio_codes = req.audio_codes
+                if (
+                    src_audio_path
+                    and not resolved_audio_codes
+                    and req.task_type == "cover"
+                ):
+                    handler = getattr(state, "handler", None)
+                    if handler and hasattr(handler, "convert_src_audio_to_codes"):
+                        try:
+                            codes_str = await _run_prequeue_cover_conversion(
+                                handler,
+                                src_audio_path,
+                            )
+                            if codes_str and not codes_str.startswith("❌"):
+                                resolved_audio_codes = codes_str
+                        except Exception as exc:
+                            logger.error(
+                                "Auto-cover audio transcoding failed for {}: {}",
+                                src_audio_path,
+                                exc,
+                            )
 
-        # Auto-convert src_audio to codes for cover mode
-        resolved_audio_codes = req.audio_codes
-        if (src_audio_path
-                and not resolved_audio_codes
-                and req.task_type == "cover"):
-            handler = getattr(state, "handler", None)
-            if handler and hasattr(
-                handler, "convert_src_audio_to_codes"
-            ):
-                try:
-                    codes_str = await asyncio.to_thread(
-                        handler.convert_src_audio_to_codes,
-                        src_audio_path,
-                    )
-                    if codes_str and not codes_str.startswith(
-                        "❌"
-                    ):
-                        resolved_audio_codes = codes_str
-                except Exception as exc:
-                    logger.error(
-                        "Auto-cover audio transcoding failed "
-                        "for {}: {}",
-                        src_audio_path,
-                        exc,
-                    )
-
-        # Convert to GenerateMusicRequest
-        gen_request = _to_generate_music_request(
-            req, prompt, lyrics, sample_query,
-            reference_audio_path, src_audio_path,
-            audio_codes=resolved_audio_codes,
-        )
+                gen_request = _to_generate_music_request(
+                    req,
+                    prompt,
+                    lyrics,
+                    sample_query,
+                    reference_audio_path,
+                    src_audio_path,
+                    audio_codes=resolved_audio_codes,
+                )
+                rec = await _admit_openrouter_job(
+                    state,
+                    state.job_store,
+                    gen_request,
+                    audio_paths,
+                    streaming=req.stream,
+                )
+        except BaseException:
+            # The admission helper owns cleanup after it starts. Failures before
+            # it returns are safely idempotent here as well.
+            if rec is None:
+                _cleanup_temp_paths(audio_paths)
+            raise
 
         if req.stream:
-            # Streaming: use progress_queue
-            rec.progress_queue = asyncio.Queue()
-
-            async with state.pending_lock:
-                state.pending_ids.append(rec.job_id)
-
-            await job_queue.put((rec.job_id, gen_request))
-
             return StreamingResponse(
                 _openrouter_stream_generator(
-                    rec, req.model, audio_format,
-                    job_store=job_store, request=request,
+                    rec,
+                    req.model,
+                    audio_format,
+                    job_store=state.job_store,
+                    request=request,
                 ),
                 media_type="text/event-stream",
             )
         else:
-            # Non-streaming: use done_event
-            rec.done_event = asyncio.Event()
-
-            async with state.pending_lock:
-                state.pending_ids.append(rec.job_id)
-
-            await job_queue.put((rec.job_id, gen_request))
-
             # Wait for completion with timeout
             try:
                 await asyncio.wait_for(rec.done_event.wait(), timeout=GENERATION_TIMEOUT)
