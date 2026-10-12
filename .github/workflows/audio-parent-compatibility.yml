@@ -1,0 +1,109 @@
+name: Qualify bounded audio against parent IO tests
+
+on:
+  push:
+    branches:
+      - security/bounded-audio-ingress-20261012
+    paths:
+      - .github/workflows/audio-parent-compatibility.yml
+      - acestep/core/generation/handler/io_audio_test.py
+
+permissions:
+  contents: read
+
+jobs:
+  parent-audio-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: security/bounded-audio-ingress-20261012
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install repository-compatible CPU audio runtime
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check --no-input \
+            --index-url https://download.pytorch.org/whl/cpu \
+            'torch==2.10.0' 'torchaudio==2.10.0'
+          python -m pip install --disable-pip-version-check --no-input \
+            'numpy==2.2.6' 'soundfile==0.13.1' 'loguru==0.7.3' 'torchcodec==0.10.0'
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+          python - <<'PY'
+          import torch, torchaudio
+          print('torch', torch.__version__)
+          print('torchaudio', torchaudio.__version__)
+          PY
+      - name: Create a real bounded AAC fixture
+        shell: bash
+        run: |
+          ffmpeg -hide_banner -loglevel error \
+            -f lavfi -i 'sine=frequency=523.25:sample_rate=44100' \
+            -t 1 -c:a aac /tmp/test_aac.aac
+          test -s /tmp/test_aac.aac
+      - name: Run parent IO suite without importing unrelated model handlers
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import sys
+          import types
+          import unittest
+
+          root = Path.cwd()
+          packages = {
+              'acestep': root / 'acestep',
+              'acestep.core': root / 'acestep' / 'core',
+              'acestep.core.generation': root / 'acestep' / 'core' / 'generation',
+              'acestep.core.generation.handler': root / 'acestep' / 'core' / 'generation' / 'handler',
+          }
+          for name, path in packages.items():
+              module = types.ModuleType(name)
+              module.__path__ = [str(path)]
+              module.__package__ = name
+              sys.modules[name] = module
+
+          def load(name, path):
+              spec = importlib.util.spec_from_file_location(name, path)
+              module = importlib.util.module_from_spec(spec)
+              sys.modules[name] = module
+              assert spec.loader is not None
+              spec.loader.exec_module(module)
+              return module
+
+          handler = root / 'acestep' / 'core' / 'generation' / 'handler'
+          load(
+              'acestep.core.generation.handler.audio_input_limits',
+              handler / 'audio_input_limits.py',
+          )
+          load('acestep.core.generation.handler.io_audio', handler / 'io_audio.py')
+          tests = load('io_audio_parent_test', handler / 'io_audio_test.py')
+          suite = unittest.defaultTestLoader.loadTestsFromModule(tests)
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if not result.wasSuccessful():
+              raise SystemExit(1)
+          print(
+              'PARENT_AUDIO_SUITE_PASS',
+              'run=', result.testsRun,
+              'failures=', len(result.failures),
+              'errors=', len(result.errors),
+              'skipped=', len(result.skipped),
+          )
+          PY
+      - name: Re-run focused policy suite and source checks
+        shell: bash
+        run: |
+          python acestep/core/generation/handler/audio_input_limits_test.py -v
+          python -m compileall -q \
+            acestep/acestep_v15_pipeline.py \
+            acestep/core/generation/handler/audio_input_limits.py \
+            acestep/core/generation/handler/io_audio.py \
+            acestep/core/generation/handler/io_audio_test.py \
+            acestep/ui/gradio/events/generation/validation.py \
+            acestep/core/generation/handler/audio_input_limits_test.py
+          git diff --check ca1e85fe9430179831e6bc6be790c332190a3866..HEAD
