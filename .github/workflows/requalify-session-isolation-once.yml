@@ -1,4 +1,4 @@
-# final requalification after Windows alias diagnostic 38228853043
+# final qualification after training path identity repair
 name: requalify-session-isolation-once
 
 on:
@@ -185,7 +185,7 @@ jobs:
 
           ## Framework and Windows requalification
 
-          The failed runs remain evidence rather than being relabeled. Run 38228229421 exposed Windows path-spelling assumptions, a candidate link escape, and a missing import path in the disposable Gradio probe. Runs 38228695767 and 38228757246 passed the Gradio integration but still failed the Windows link case. Diagnostic run 38228853043 established the cause: Windows supplied the configured temporary root through an 8.3 alias while generated paths used the long alias, so managed-path recognition returned early even though the final entry was a real symlink/reparse point.
+          The failed runs remain evidence rather than being relabeled. Run 38228229421 exposed Windows path-spelling assumptions, a candidate link escape, and a missing import path in the disposable Gradio probe. Runs 38228695767 and 38228757246 passed the Gradio integration but still failed the Windows link case. Diagnostic run 38228853043 established the cause: Windows supplied the configured temporary root through an 8.3 alias while generated paths used the long alias, so managed-path recognition returned early even though the final entry was a real symlink/reparse point. Run 38229091003 then proved the alias/link repair while exposing two remaining path-string assertions in the training access tests; those tests now compare actual file identity.
 
           The candidate now compares both lexical and resolved path candidates against both lexical and canonical generated-root aliases before applying session containment and link/reparse-point rejection. GitHub Actions run ${GITHUB_RUN_ID} completed the focused suites and compile checks on CPython 3.11 for both Ubuntu and Windows. Path-equivalence tests compare actual files rather than platform-specific slash spelling.
 
