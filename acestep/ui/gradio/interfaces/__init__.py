@@ -39,6 +39,7 @@ from acestep.ui.gradio.interfaces.result import create_results_section
 from acestep.ui.gradio.interfaces.training import create_training_section
 from acestep.ui.gradio.events import setup_event_handlers, setup_training_event_handlers
 from acestep.ui.gradio.help_content import create_help_button, HELP_MODAL_CSS
+from acestep.ui.gradio.session_artifact_state import SessionArtifactScopeState
 
 
 def create_gradio_interface(dit_handler, llm_handler, dataset_handler, init_params=None, language='en') -> gr.Blocks:
@@ -312,7 +313,8 @@ def create_gradio_interface(dit_handler, llm_handler, dataset_handler, init_para
         }
         """ + HELP_MODAL_CSS,
     ) as demo:
-        
+        session_artifact_scope = gr.State(value=SessionArtifactScopeState())
+
         gr.HTML(f"""
         <div class="main-header">
             <h1>{t("app.title")}</h1>
@@ -361,7 +363,9 @@ def create_gradio_interface(dit_handler, llm_handler, dataset_handler, init_para
         generation_section = {}
         generation_section.update(settings_section)
         generation_section.update(gen_section)
-        
+        generation_section["session_artifact_scope"] = session_artifact_scope
+        training_section["session_artifact_scope"] = session_artifact_scope
+
         # Connect event handlers
         setup_event_handlers(
             demo, dit_handler, llm_handler, dataset_handler,

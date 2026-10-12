@@ -74,6 +74,43 @@ class BatchManagementBackgroundTests(unittest.TestCase):
         self.assertIn("messages.batch_ready", result[2])
         self.assertTrue(result[3]["interactive"])
 
+    def test_background_generation_restores_session_scope(self):
+        """AutoGen must reuse the foreground page's opaque session scope."""
+        module, state = load_batch_management_module(is_windows=False)
+        seen = {}
+
+        def _gen(*_args, **kwargs):
+            """Capture the scope forwarded to background generation."""
+            seen["scope"] = kwargs.get("session_artifact_scope")
+            yield build_progress_result(length=48)
+
+        scope = "B" * 43
+        with patch.dict(
+            module.generate_next_batch_background.__globals__,
+            {"generate_with_progress": _gen},
+        ):
+            module.generate_next_batch_background(
+                None,
+                None,
+                autogen_enabled=True,
+                generation_params={
+                    "batch_size_input": 2,
+                    "allow_lm_batch": False,
+                    "auto_lrc": False,
+                    "session_artifact_scope": scope,
+                },
+                current_batch_index=0,
+                total_batches=1,
+                batch_queue={},
+                is_format_caption=False,
+            )
+
+        self.assertEqual(scope, seen["scope"])
+        self.assertEqual(
+            scope,
+            state["store_calls"][0]["generation_params"]["session_artifact_scope"],
+        )
+
     def test_background_generation_forwards_no_fsq(self):
         """Background AutoGen should preserve the Remix no_fsq option."""
         module, _state = load_batch_management_module(is_windows=False)

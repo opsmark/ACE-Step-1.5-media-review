@@ -127,6 +127,18 @@ def create_demo(init_params=None, language="en"):
     return demo
 
 
+def _paths_overlap(left: str, right: str) -> bool:
+    """Return whether either canonical path contains the other."""
+
+    normalized_left = os.path.normcase(os.path.realpath(left))
+    normalized_right = os.path.normcase(os.path.realpath(right))
+    try:
+        common = os.path.commonpath([normalized_left, normalized_right])
+    except ValueError:
+        return False
+    return common in {normalized_left, normalized_right}
+
+
 def _resolve_startup_lm_backend(requested_backend: str | None, gpu_config) -> str:
     """Resolve the startup LM backend against hardware compatibility restrictions."""
     resolved_backend = resolve_lm_backend(requested_backend, gpu_config)
@@ -246,7 +258,10 @@ def main():
         "--allowed-path",
         action="append",
         default=[],
-        help="Additional allowed file paths for Gradio (repeatable).",
+        help=(
+            "Administrator-approved path exposed to every Gradio user "
+            "(repeatable; generated-output overlap is refused)."
+        ),
     )
 
     # Service mode argument
@@ -645,10 +660,21 @@ def main():
             auth = (args.auth_username, args.auth_password)
             print("Authentication enabled")
 
-        allowed_paths = [output_dir]
+        # Returned component files are copied into Gradio's cache. Do not expose
+        # the complete generated-output tree to every user via ``allowed_paths``.
+        allowed_paths = []
         for p in args.allowed_path:
-            if p and p not in allowed_paths:
-                allowed_paths.append(p)
+            if p:
+                explicit_path = os.path.realpath(
+                    os.path.abspath(os.path.expanduser(p))
+                )
+                if _paths_overlap(explicit_path, output_dir):
+                    raise ValueError(
+                        "--allowed-path must not overlap generated Gradio outputs"
+                    )
+                if explicit_path not in allowed_paths:
+                    allowed_paths.append(explicit_path)
+        allowed_paths = allowed_paths or None
 
         # Enable API endpoints if requested
         if args.enable_api:
@@ -665,7 +691,7 @@ def main():
                 prevent_thread_lock=True,  # Don't block, so we can add routes
                 inbrowser=False,
                 auth=auth,
-                allowed_paths=allowed_paths,  # include output_dir + user-provided
+                allowed_paths=allowed_paths,  # explicit administrator paths only
             )
 
             # Now add API routes to Gradio's FastAPI app (app is available after launch)
@@ -695,7 +721,7 @@ def main():
                 prevent_thread_lock=False,
                 inbrowser=False,
                 auth=auth,
-                allowed_paths=allowed_paths,  # include output_dir + user-provided
+                allowed_paths=allowed_paths,  # explicit administrator paths only
             )
     except Exception as e:
         print(f"Error launching Gradio: {e}", file=sys.stderr)

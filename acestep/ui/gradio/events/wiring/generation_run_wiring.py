@@ -138,6 +138,7 @@ def register_generation_run_handlers(context: GenerationWiringContext) -> None:
             results_section["total_batches"],
             results_section["batch_queue"],
             results_section["generation_params_state"],
+            generation_section["session_artifact_scope"],
         ],
         outputs=[
             results_section["generated_audio_1"],

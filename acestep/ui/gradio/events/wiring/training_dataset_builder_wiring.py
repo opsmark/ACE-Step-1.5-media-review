@@ -50,8 +50,8 @@ def register_training_dataset_builder_handlers(context: TrainingWiringContext) -
     sample_preview_outputs = _build_sample_preview_outputs(training_section)
 
     training_section["scan_btn"].click(
-        fn=lambda directory, name, tag, pos, instr, state: train_h.scan_directory(
-            directory, name, tag, pos, instr, state
+        fn=lambda directory, name, tag, pos, instr, state, scope: train_h.scan_directory(
+            directory, name, tag, pos, instr, state, scope
         ),
         inputs=[
             training_section["audio_directory"],
@@ -60,6 +60,7 @@ def register_training_dataset_builder_handlers(context: TrainingWiringContext) -
             training_section["tag_position"],
             training_section["all_instrumental"],
             training_section["dataset_builder_state"],
+            training_section["session_artifact_scope"],
         ],
         outputs=[
             training_section["audio_files_table"],
@@ -168,6 +169,7 @@ def register_training_dataset_builder_handlers(context: TrainingWiringContext) -
             training_section["save_path"],
             training_section["dataset_name"],
             training_section["dataset_builder_state"],
+            training_section["session_artifact_scope"],
         ],
         outputs=[
             training_section["save_status"],

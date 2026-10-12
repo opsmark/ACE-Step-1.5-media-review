@@ -23,10 +23,7 @@ from acestep.gpu_config import (
 )
 from acestep.ui.gradio.i18n import t
 from acestep.ui.gradio.events.generation_handlers import parse_and_validate_timesteps
-from acestep.ui.gradio.events.results.generation_info import (
-    DEFAULT_RESULTS_DIR,
-    _build_generation_info,
-)
+from acestep.ui.gradio.events.results.generation_info import _build_generation_info
 from acestep.ui.gradio.events.results.generation_task_type import (
     resolve_chunk_mask_mode,
     resolve_no_fsq_task_type,
@@ -37,6 +34,10 @@ from acestep.ui.gradio.events.results.audio_playback_updates import (
 from acestep.ui.gradio.events.results.scoring import calculate_score_handler
 from acestep.ui.gradio.events.results.lrc_utils import lrc_to_vtt_file
 from acestep.ui.gradio.events.results.session_artifacts import persist_sample_session_artifacts
+from acestep.ui.gradio.session_artifact_scope import (
+    allocate_session_batch_directory,
+    resolve_session_artifact_scope,
+)
 
 
 def generate_with_progress(
@@ -74,6 +75,7 @@ def generate_with_progress(
     flow_edit_n_min=0.0,
     flow_edit_n_max=1.0,
     flow_edit_n_avg=1,
+    session_artifact_scope=None,
     progress=gr.Progress(track_tqdm=True),
 ):
     """Generate audio with progress tracking.
@@ -84,6 +86,8 @@ def generate_with_progress(
     Yields:
         Tuple of Gradio component updates for the 52-output generate event.
     """
+    active_scope = resolve_session_artifact_scope(session_artifact_scope)
+
     # GPU memory validation
     gpu_config = get_global_gpu_config()
     lm_initialized = llm_handler.llm_initialized if llm_handler else False
@@ -273,6 +277,8 @@ def generate_with_progress(
     )
     time_module.sleep(0.1)
 
+    _, temp_dir = allocate_session_batch_directory(active_scope)
+
     for i in range(8):
         if i >= len(audios):
             continue
@@ -282,10 +288,6 @@ def generate_with_progress(
         sample_rate = audios[i]["sample_rate"]
         audio_params = audios[i]["params"]
 
-        timestamp = int(time_module.time())
-        temp_dir = os.path.join(DEFAULT_RESULTS_DIR, f"batch_{timestamp}")
-        temp_dir = os.path.abspath(temp_dir).replace("\\", "/")
-        os.makedirs(temp_dir, exist_ok=True)
         json_path = os.path.join(temp_dir, f"{key}.json").replace("\\", "/")
 
         ext = "wav" if audio_format == "wav32" else audio_format
@@ -342,7 +344,7 @@ def generate_with_progress(
             _run_auto_lrc(
                 dit_handler, result.extra_outputs, i,
                 audio_duration, vocal_language, inference_steps,
-                final_lrcs_list, final_subtitles_list,
+                final_lrcs_list, final_subtitles_list, temp_dir,
             )
             total_auto_lrc_time += time_module.time() - auto_lrc_start
 
@@ -493,7 +495,7 @@ def _persist_repaint_source_latents(source_latents, json_path: str, audio_params
 
 def _run_auto_lrc(dit_handler, extra_outputs, sample_idx,
                   audio_duration, vocal_language, inference_steps,
-                  final_lrcs_list, final_subtitles_list):
+                  final_lrcs_list, final_subtitles_list, output_dir):
     """Run automatic LRC generation for a single sample in-place.
 
     Updates *final_lrcs_list* and *final_subtitles_list* at *sample_idx*.
@@ -530,7 +532,11 @@ def _run_auto_lrc(dit_handler, extra_outputs, sample_idx,
             lrc_text = lrc_result.get("lrc_text", "")
             final_lrcs_list[sample_idx] = lrc_text
             logger.info(f"[auto_lrc] LRC text length for sample {sample_idx + 1}: {len(lrc_text)}")
-            vtt_path = lrc_to_vtt_file(lrc_text, total_duration=float(actual_duration))
+            vtt_path = lrc_to_vtt_file(
+                lrc_text,
+                total_duration=float(actual_duration),
+                output_dir=output_dir,
+            )
             final_subtitles_list[sample_idx] = vtt_path
     except Exception as e:
         logger.warning(f"[auto_lrc] Failed to generate LRC for sample {sample_idx + 1}: {e}")

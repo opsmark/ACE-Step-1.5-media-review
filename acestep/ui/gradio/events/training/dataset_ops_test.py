@@ -59,7 +59,11 @@ class TestGetSamplePreview(unittest.TestCase):
         builder = MagicMock()
         builder.samples = [sample]
 
-        result = get_sample_preview(0, builder)
+        with patch(
+            "acestep.ui.gradio.events.training.dataset_ops.authorize_builder_sample",
+            return_value="/path/to/audio.wav",
+        ):
+            result = get_sample_preview(0, builder)
         self.assertEqual(result[0], "/path/to/audio.wav")
         self.assertEqual(result[1], "audio.wav")
         self.assertEqual(result[4], "Genre")  # prompt_override converted
@@ -97,6 +101,44 @@ class TestSaveDataset(unittest.TestCase):
         builder.samples = [MagicMock()]
         status, _ = save_dataset("", "name", builder)
         self.assertIn("❌", status)
+
+    def test_save_uses_session_boundary_before_writing(self):
+        builder = MagicMock()
+        builder.samples = [MagicMock()]
+        builder.get_labeled_count.return_value = 1
+        builder.save_dataset.return_value = "✅ saved"
+        scope = "C" * 43
+
+        with patch(
+            "acestep.ui.gradio.events.training.dataset_ops.bind_builder_to_session"
+        ) as bind, patch(
+            "acestep.ui.gradio.events.training.dataset_ops.authorize_training_path",
+            return_value="/safe/dataset.json",
+        ) as authorize, patch(
+            "acestep.ui.gradio.events.training.dataset_ops.validate_builder_audio_paths",
+            return_value=(True, ""),
+        ) as validate:
+            status, _update = save_dataset("dataset", "name", builder, scope)
+
+        self.assertEqual("✅ saved", status)
+        bind.assert_called_once_with(builder, scope)
+        authorize.assert_called_once_with("dataset.json", scope, must_exist=False)
+        validate.assert_called_once_with(builder, must_exist=False)
+        builder.save_dataset.assert_called_once_with("/safe/dataset.json", "name")
+
+    def test_save_rejects_builder_owned_by_another_session(self):
+        builder = MagicMock()
+        builder.samples = [MagicMock()]
+        scope = "D" * 43
+
+        with patch(
+            "acestep.ui.gradio.events.training.dataset_ops.bind_builder_to_session",
+            side_effect=ValueError("other session"),
+        ):
+            status, _update = save_dataset("dataset.json", "name", builder, scope)
+
+        self.assertIn("outside this session", status)
+        builder.save_dataset.assert_not_called()
 
 
 if __name__ == "__main__":
