@@ -41,24 +41,45 @@ class ReadAudioFileTests(unittest.TestCase):
         """When soundfile fails, torchaudio.load should be tried."""
         fake_waveform = torch.randn(1, 44100)
 
-        with patch("acestep.core.generation.handler.io_audio.sf") as mock_sf:
-            mock_sf.read.side_effect = Exception("Format not recognised")
-            with patch("torchaudio.load", return_value=(fake_waveform, 44100)) as mock_load:
-                audio_np, sr = _read_audio_file("test.aac")
+        with patch(
+            "acestep.core.generation.handler.io_audio.validate_audio_file_limits",
+            return_value=MagicMock(),
+        ):
+            with patch(
+                "acestep.core.generation.handler.io_audio.decode_frame_limit",
+                return_value=44101,
+            ):
+                with patch("acestep.core.generation.handler.io_audio.sf") as mock_sf:
+                    mock_sf.read.side_effect = Exception("Format not recognised")
+                    with patch(
+                        "torchaudio.load", return_value=(fake_waveform, 44100)
+                    ) as mock_load:
+                        audio_np, sr = _read_audio_file("test.aac")
 
         self.assertEqual(sr, 44100)
         self.assertEqual(audio_np.shape[0], 44100)
-        mock_load.assert_called_once_with("test.aac")
+        mock_load.assert_called_once_with("test.aac", num_frames=44101)
 
     def test_raises_when_both_fail(self):
         """Should raise RuntimeError when both soundfile and torchaudio fail."""
-        with patch("acestep.core.generation.handler.io_audio.sf") as mock_sf:
-            mock_sf.read.side_effect = Exception("sf fail")
-            with patch("torchaudio.load", side_effect=RuntimeError("ta fail")):
-                with self.assertRaises(RuntimeError) as ctx:
-                    _read_audio_file("bad.xyz")
-                self.assertIn("sf fail", str(ctx.exception))
-                self.assertIn("ta fail", str(ctx.exception))
+        with patch(
+            "acestep.core.generation.handler.io_audio.validate_audio_file_limits",
+            return_value=MagicMock(),
+        ):
+            with patch(
+                "acestep.core.generation.handler.io_audio.decode_frame_limit",
+                return_value=11,
+            ):
+                with patch("acestep.core.generation.handler.io_audio.sf") as mock_sf:
+                    mock_sf.read.side_effect = Exception("sf fail")
+                    with patch(
+                        "torchaudio.load", side_effect=RuntimeError("ta fail")
+                    ) as mock_load:
+                        with self.assertRaises(RuntimeError) as ctx:
+                            _read_audio_file("bad.xyz")
+                        self.assertIn("sf fail", str(ctx.exception))
+                        self.assertIn("ta fail", str(ctx.exception))
+                        mock_load.assert_called_once_with("bad.xyz", num_frames=11)
 
 
 class IoAudioMixinTests(unittest.TestCase):
