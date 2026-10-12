@@ -550,16 +550,26 @@ class RequestBodyLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        limit = self.path_limits.get(scope.get("path", ""))
+        request_path = str(scope.get("path", ""))
+        normalized_path = request_path.rstrip("/") or "/"
+        limit = self.path_limits.get(request_path)
+        if limit is None:
+            limit = self.path_limits.get(normalized_path)
         if limit is None:
             await self.app(scope, receive, send)
             return
 
-        headers: dict[bytes, bytes] = {}
-        for key, value in scope.get("headers", []):
-            headers[key.lower()] = value
-        declared_raw = headers.get(b"content-length")
-        if declared_raw is not None:
+        declared_values = [
+            value for key, value in scope.get("headers", [])
+            if key.lower() == b"content-length"
+        ]
+        if declared_values:
+            if len(set(declared_values)) != 1:
+                await self._reject(
+                    scope, receive, send, 400, "Conflicting Content-Length headers"
+                )
+                return
+            declared_raw = declared_values[0]
             try:
                 declared = int(declared_raw)
             except (TypeError, ValueError):

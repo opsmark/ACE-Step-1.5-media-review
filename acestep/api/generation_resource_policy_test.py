@@ -332,5 +332,97 @@ class CancellationAndSourceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(GenerationResourceLimits().max_request_body_bytes, 64 * 1024 * 1024)
 
 
+class StickyCancellationRedTeamTests(unittest.IsolatedAsyncioTestCase):
+    def test_mark_failed_cannot_replace_cancellation_reason(self):
+        from acestep.api.jobs.store import _JobStore
+
+        store = _JobStore()
+        rec = store.create()
+        store.request_cancel(rec.job_id, "client disconnected")
+        self.assertFalse(store.mark_failed(rec.job_id, "internal traceback"))
+        current = store.get(rec.job_id)
+        self.assertEqual(current.error, "client disconnected")
+        self.assertEqual(current.status, "failed")
+
+    def test_progress_cannot_reopen_or_relabel_cancelled_job(self):
+        from acestep.api.jobs.store import _JobStore
+
+        store = _JobStore()
+        rec = store.create()
+        store.request_cancel(rec.job_id, "deadline exceeded")
+        store.update_progress(rec.job_id, 0.9, "running again")
+        current = store.get(rec.job_id)
+        self.assertEqual(current.stage, "failed")
+        self.assertEqual(current.error, "deadline exceeded")
+
+    async def test_pre_cancelled_job_does_not_initialize_models(self):
+        from types import SimpleNamespace
+        from acestep.api.job_execution_runtime import run_one_job_runtime
+        from acestep.api.jobs.store import _JobStore
+
+        store = _JobStore()
+        rec = store.create()
+        store.request_cancel(rec.job_id, "cancel before admission")
+        initialized = []
+
+        async def ensure(_):
+            initialized.append(True)
+
+        with self.assertRaises(TimeoutError):
+            await run_one_job_runtime(
+                app_state=SimpleNamespace(job_store=store, executor=None),
+                store=None,
+                job_id=rec.job_id,
+                req=SimpleNamespace(model="model"),
+                ensure_models_initialized_fn=ensure,
+                select_generation_handler_fn=lambda **_: (_ for _ in ()).throw(AssertionError()),
+                get_model_name=lambda value: value,
+                build_blocking_result_fn=lambda *_: {},
+                update_progress_job_cache_fn=lambda **_: None,
+                update_terminal_job_cache_fn=lambda **_: None,
+                map_status=lambda value: value,
+                result_key_prefix="test",
+                result_expire_seconds=1,
+            )
+        self.assertEqual(initialized, [])
+
+    async def test_deadline_during_initialization_skips_generation(self):
+        import asyncio
+        from types import SimpleNamespace
+        from acestep.api.job_execution_runtime import run_one_job_runtime
+        from acestep.api.jobs.store import _JobStore
+
+        store = _JobStore()
+        rec = store.create()
+        store.set_deadline(rec.job_id, 0.001)
+        selected = []
+
+        async def ensure(_):
+            await asyncio.sleep(0.01)
+
+        def select(**_):
+            selected.append(True)
+            return object(), "model"
+
+        with self.assertRaises(TimeoutError):
+            await run_one_job_runtime(
+                app_state=SimpleNamespace(job_store=store, executor=None),
+                store=None,
+                job_id=rec.job_id,
+                req=SimpleNamespace(model="model"),
+                ensure_models_initialized_fn=ensure,
+                select_generation_handler_fn=select,
+                get_model_name=lambda value: value,
+                build_blocking_result_fn=lambda *_: {},
+                update_progress_job_cache_fn=lambda **_: None,
+                update_terminal_job_cache_fn=lambda **_: None,
+                map_status=lambda value: value,
+                result_key_prefix="test",
+                result_expire_seconds=1,
+            )
+        self.assertEqual(selected, [])
+        self.assertEqual(store.get(rec.job_id).error, "Generation deadline exceeded")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -157,6 +157,25 @@ class RequestBodyLimitTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(limits[path], 0)
 
 
+class RequestFramingRedTeamTests(unittest.IsolatedAsyncioTestCase):
+    async def test_conflicting_duplicate_content_lengths_are_rejected(self):
+        status, body, called = await _exercise_middleware(
+            chunks=[b"12345"],
+            headers=[(b"content-length", b"5"), (b"content-length", b"6")],
+            limit=10,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(called["app"], 0)
+        self.assertIn(b"Conflicting Content-Length", body)
+
+    async def test_trailing_slash_cannot_bypass_path_limit(self):
+        status, _, called = await _exercise_middleware(
+            path="/release_task/", chunks=[b"12345678901"], limit=10
+        )
+        self.assertEqual(status, 413)
+        self.assertEqual(called["bytes"], 0)
+
+
 class ExtendedReleaseTaskTests(unittest.TestCase):
     def test_08_normal_request_passes_hardware_intersection(self):
         self.assertEqual(

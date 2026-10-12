@@ -47,9 +47,17 @@ async def run_one_job_runtime(
     job_store = app_state.job_store
     executor = app_state.executor
 
-    await ensure_models_initialized_fn(app_state)
+    reason = job_store.cancellation_reason(job_id)
+    if reason is not None:
+        raise TimeoutError(reason)
     if not job_store.mark_running(job_id):
         raise TimeoutError(job_store.cancellation_reason(job_id) or "Generation cancelled")
+
+    await ensure_models_initialized_fn(app_state)
+    reason = job_store.cancellation_reason(job_id)
+    if reason is not None:
+        raise TimeoutError(reason)
+
     update_progress_job_cache_fn(
         app_state=app_state,
         store=store,
@@ -101,7 +109,8 @@ async def run_one_job_runtime(
         error_traceback = traceback.format_exc()
         log_fn(f"[API Server] Job {job_id} FAILED: {exc}")
         log_fn(f"[API Server] Traceback:\n{error_traceback}")
-        job_store.mark_failed(job_id, error_traceback)
+        cancellation_reason = job_store.cancellation_reason(job_id)
+        job_store.mark_failed(job_id, cancellation_reason or error_traceback)
         update_terminal_job_cache_fn(
             app_state=app_state,
             store=store,

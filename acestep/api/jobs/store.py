@@ -144,10 +144,19 @@ class _JobStore:
             record.updated_at = time.time()
             return True
 
-    def mark_failed(self, job_id: str, error: str) -> None:
-        """Mark a job as failed and persist an error message."""
+    def mark_failed(self, job_id: str, error: str) -> bool:
+        """Mark failure unless a prior cancellation/success already became terminal."""
         with self._lock:
             record = self._jobs[job_id]
+            if record.cancel_requested:
+                record.status = "failed"
+                record.result = None
+                record.error = record.cancel_reason or record.error or "Generation cancelled"
+                record.stage = "failed"
+                record.updated_at = time.time()
+                return False
+            if record.status == "succeeded":
+                return False
             record.status = "failed"
             record.finished_at = time.time()
             record.result = None
@@ -155,6 +164,7 @@ class _JobStore:
             record.progress = record.progress if record.progress > 0 else 0.0
             record.stage = "failed"
             record.updated_at = time.time()
+            return True
 
     def set_deadline(self, job_id: str, timeout_seconds: float) -> None:
         """Attach a monotonic deadline used by response and worker paths."""
@@ -204,7 +214,7 @@ class _JobStore:
         """Update progress and optional stage for an existing job."""
         with self._lock:
             record = self._jobs.get(job_id)
-            if not record:
+            if not record or record.cancel_requested or record.status in ("succeeded", "failed"):
                 return
             record.progress = max(0.0, min(1.0, float(progress)))
             if stage:
