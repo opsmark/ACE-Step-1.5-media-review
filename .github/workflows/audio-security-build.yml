@@ -15,6 +15,9 @@ concurrency:
   group: bounded-audio-ingress-construction
   cancel-in-progress: false
 
+env:
+  PATCH_SHA256: 8a317d75cb90d77104f24b1dff188cd6896bf49b899d83dcf0ddd92264cea77b
+
 jobs:
   qualify:
     if: github.actor != 'github-actions[bot]'
@@ -36,7 +39,30 @@ jobs:
       - name: Reconstruct and verify reviewed patch
         shell: bash
         run: |
-          python -c "from pathlib import Path; import base64,hashlib; files=sorted(Path('.ops-build/audio_patch_chunks').glob('chunk_*')); assert len(files)==7, files; encoded=b''.join(p.read_bytes() for p in files); patch=base64.b64decode(encoded, validate=True); actual=hashlib.sha256(patch).hexdigest(); assert actual=='8a317d75cb90d77104f24b1dff188cd6896bf49b899d83dcf0ddd92264cea77b', actual; Path('audio-security.patch').write_bytes(patch); print('patch_bytes',len(patch),'sha256',actual)"
+          python - <<'PY'
+          from pathlib import Path
+          import base64
+          import hashlib
+          import os
+
+          root = Path('.ops-build/audio_patch_chunks')
+          names = [
+              'chunk_00', 'chunk_01',
+              'repair_02_0', 'repair_02_1',
+              'repair_03_0', 'repair_03_1',
+              'chunk_04',
+              'repair_05_0', 'repair_05_1',
+              'chunk_06',
+          ]
+          parts = [root / name for name in names]
+          assert all(path.is_file() for path in parts), parts
+          encoded = b''.join(path.read_bytes() for path in parts)
+          patch = base64.b64decode(encoded, validate=True)
+          actual = hashlib.sha256(patch).hexdigest()
+          assert actual == os.environ['PATCH_SHA256'], actual
+          Path('audio-security.patch').write_bytes(patch)
+          print('patch_bytes', len(patch), 'sha256', actual)
+          PY
           git apply --check audio-security.patch
           git apply audio-security.patch
 
@@ -127,7 +153,27 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          python -c "from pathlib import Path; import base64,hashlib; files=sorted(Path('.ops-build/audio_patch_chunks').glob('chunk_*')); assert len(files)==7, files; encoded=b''.join(p.read_bytes() for p in files); patch=base64.b64decode(encoded, validate=True); actual=hashlib.sha256(patch).hexdigest(); assert actual=='8a317d75cb90d77104f24b1dff188cd6896bf49b899d83dcf0ddd92264cea77b', actual; Path('audio-security.patch').write_bytes(patch)"
+          python - <<'PY'
+          from pathlib import Path
+          import base64
+          import hashlib
+          import os
+
+          root = Path('.ops-build/audio_patch_chunks')
+          names = [
+              'chunk_00', 'chunk_01',
+              'repair_02_0', 'repair_02_1',
+              'repair_03_0', 'repair_03_1',
+              'chunk_04',
+              'repair_05_0', 'repair_05_1',
+              'chunk_06',
+          ]
+          encoded = b''.join((root / name).read_bytes() for name in names)
+          patch = base64.b64decode(encoded, validate=True)
+          actual = hashlib.sha256(patch).hexdigest()
+          assert actual == os.environ['PATCH_SHA256'], actual
+          Path('audio-security.patch').write_bytes(patch)
+          PY
           git apply --check audio-security.patch
           git apply audio-security.patch
           rm audio-security.patch
@@ -150,7 +196,7 @@ jobs:
           Finding: Codex Security \`csf_d576fc10819cdf621fcc765a\` (uploaded audio fully decoded before any size or duration limit).
 
           Frozen base: \`ca1e85fe9430179831e6bc6be790c332190a3866\`.
-          Reviewed patch SHA-256: \`8a317d75cb90d77104f24b1dff188cd6896bf49b899d83dcf0ddd92264cea77b\`.
+          Reviewed patch SHA-256: \`${PATCH_SHA256}\`.
           GitHub Actions run: \`${RUN_ID}\`, attempt \`${RUN_ATTEMPT}\`.
 
           ## Qualified behavior
@@ -158,20 +204,20 @@ jobs:
           - Gradio rejects uploads above the central byte ceiling before temporary-file storage.
           - A central pre-decode policy limits file bytes, duration, sample rate, channels and decoded sample count; environment values may tighten but cannot widen compiled ceilings.
           - \`soundfile.info\` is used for bounded metadata where supported; a shell-free, timed \`ffprobe\` argv fallback handles other containers.
-          - \`soundfile.read\` and \`torchaudio.load\` receive a one-frame-over ceiling, and actual decoder output plus projected stereo 48 kHz resampling are rechecked before copies/tensors/resampling.
+          - \`soundfile.read\` and \`torchaudio.load\` receive a one-frame-over ceiling, and actual decoder output plus projected stereo 48 kHz resampling are rechecked before copies, tensors or resampling.
           - The UI clears rejected source/reference uploads with the existing localized invalid-audio warning instead of waiting for a full decode.
           - Nineteen focused checks passed on CPython 3.11 under Ubuntu and Windows, with compilation and \`git diff --check\` passing on both.
-          - Ubuntu additionally exercised a real PCM WAV metadata path, a real AAC/ffprobe path, and a tightened duration refusal.
+          - Ubuntu additionally exercised a real PCM WAV metadata path, a real AAC/ffprobe path and a tightened duration refusal.
 
-          ## Preserved construction evidence
+          ## Preserved negative evidence
 
-          The first Base44 package-level unittest attempt imported optional PyTorch before reaching the focused module and failed because PyTorch was unavailable; it was not counted as a source failure or rewritten as a passing run. The isolated focused harness then exposed and corrected an undercount in projected resampling: mono is duplicated to stereo, so projected resampled samples must always budget two channels. The final focused run passed 19/19 before this cross-platform qualification.
+          The first Base44 package-level unittest attempt imported optional PyTorch before reaching the focused module and failed because PyTorch was unavailable; it was not counted as a source failure or rewritten as a passing run. The isolated focused harness then exposed and corrected an undercount in projected resampling: mono is duplicated to stereo, so projected resampled samples must budget two channels. Initial GitHub Actions run \`38245129873\` failed before source application because three manually transported patch chunks were truncated; exact segment hashes identified the transport fault and the corrected explicit segment list was requalified instead of relabeling that run.
 
           ## Limits and receiving gate
 
-          This source branch is not merged or deployed. It did not run a real GPU generation, the target Windows installation, a production proxy, concurrent abusive uploads, every codec, retention/cleanup, per-principal quotas or operating-system enforcement. Metadata inspection and bounded decode substantially reduce the reported resource-amplification path but do not prove arbitrary media are benign or eliminate every codec/parser defect and time-of-check/time-of-use race.
+          This source branch is not merged or deployed. It did not run a real GPU generation, the target Windows installation, a production proxy, concurrent abusive uploads, every codec, retention/cleanup, per-principal quotas or operating-system enforcement. Metadata inspection and bounded decode reduce the reported resource-amplification path but do not prove arbitrary media are benign or eliminate every codec/parser defect and time-of-check/time-of-use race.
 
-          Before merge/deployment: inventory legitimate current audio sizes/durations/rates/channels and any non-audio Gradio uploads affected by the global 256 MiB ingress ceiling; run the focused tests on the target supported environment; exercise normal source/reference/cover/repaint generation with trusted WAV/MP3/AAC/M4A inputs; verify over-limit refusal occurs before full decode, tensor allocation, resampling, model initialization or GPU work; test proxy/body ceilings and concurrent requests; preserve installed-source rollback; close the finding only after deployed runtime readback.
+          Before merge/deployment: inventory legitimate current audio sizes, durations, rates and channels plus any non-audio Gradio uploads affected by the global 256 MiB ingress ceiling; run the focused tests on the target supported environment; exercise normal source/reference/cover/repaint generation with trusted WAV/MP3/AAC/M4A inputs; verify over-limit refusal occurs before full decode, tensor allocation, resampling, model initialization or GPU work; test proxy/body ceilings and concurrent requests; preserve installed-source rollback; close the finding only after deployed runtime readback.
           EOF
 
           git rm -r .ops-build/audio_patch_chunks .github/workflows/audio-security-build.yml
