@@ -14,6 +14,15 @@ import torch
 from loguru import logger
 
 from .models import AudioSample
+from .dataset_path_safety import (
+    DatasetPathError,
+    atomic_write_with,
+    resolve_dataset_audio_path,
+    resolve_tensor_output_dir,
+    resolve_tensor_output_path,
+    validate_sample_id,
+)
+from acestep.training.path_safety import get_safe_root
 from .preprocess_audio import load_audio_stereo
 from .preprocess_context import build_context_latents
 from .preprocess_encoder import run_encoder
@@ -90,6 +99,10 @@ class PreprocessMixin:
         if dit_handler is None or dit_handler.model is None:
             return [], "❌ Model not initialized. Please initialize the service first."
 
+        try:
+            output_dir = resolve_tensor_output_dir(output_dir)
+        except DatasetPathError as exc:
+            return [], f"❌ Unsafe tensor output directory: {exc}"
         os.makedirs(output_dir, exist_ok=True)
 
         output_paths: List[str] = []
@@ -109,12 +122,45 @@ class PreprocessMixin:
         genre_indices = select_genre_indices(labeled_samples, self.metadata.genre_ratio)
         debug_log_verbose_for("dataset", f"selected genre indices: count={len(genre_indices)}")
 
+        approved_audio_root = (
+            getattr(self, "_dataset_audio_root", "")
+            or getattr(self, "_current_dir", "")
+            or get_safe_root()
+        )
+        try:
+            validated_ids = [validate_sample_id(sample.id) for sample in labeled_samples]
+            if len(set(validated_ids)) != len(validated_ids):
+                raise DatasetPathError("Duplicate sample ids would overwrite tensor outputs")
+            validated_audio_paths = [
+                resolve_dataset_audio_path(sample.audio_path, approved_audio_root)
+                for sample in labeled_samples
+            ]
+            validated_tensor_paths = [
+                resolve_tensor_output_path(output_dir, sample_id)
+                for sample_id in validated_ids
+            ]
+        except DatasetPathError as exc:
+            return [], f"❌ Rejected unsafe dataset sample: {exc}"
+
         for i, sample in enumerate(labeled_samples):
             try:
+                sample_id = validated_ids[i]
+                canonical_audio_path = resolve_dataset_audio_path(
+                    validated_audio_paths[i],
+                    approved_audio_root,
+                )
+                tensor_output_path = resolve_tensor_output_path(
+                    output_dir,
+                    sample_id,
+                )
+                if tensor_output_path != validated_tensor_paths[i]:
+                    raise DatasetPathError("Tensor destination changed after preflight")
+                sample.id = sample_id
+                sample.audio_path = canonical_audio_path
                 debug_log_verbose_for("dataset", f"sample[{i}] id={sample.id} file={sample.filename}")
 
                 if skip_existing:
-                    existing_path = os.path.join(output_dir, f"{sample.id}.pt")
+                    existing_path = tensor_output_path
                     if os.path.isfile(existing_path):
                         output_paths.append(existing_path)
                         success_count += 1
@@ -129,7 +175,7 @@ class PreprocessMixin:
 
                 # -- Load audio ------------------------------------------------
                 t0 = debug_start_verbose_for("dataset", f"load_audio_stereo[{i}]")
-                audio, _ = load_audio_stereo(sample.audio_path, target_sample_rate, max_duration)
+                audio, _ = load_audio_stereo(canonical_audio_path, target_sample_rate, max_duration)
                 debug_end_verbose_for("dataset", f"load_audio_stereo[{i}]", t0)
                 debug_log_verbose_for("dataset", f"audio shape={tuple(audio.shape)} dtype={audio.dtype}")
                 audio = audio.unsqueeze(0)
@@ -266,7 +312,7 @@ class PreprocessMixin:
                     "encoder_attention_mask": encoder_attention_mask.squeeze(0).cpu(),
                     "context_latents": context_latents.squeeze(0).cpu(),
                     "metadata": {
-                        "audio_path": sample.audio_path,
+                        "audio_path": canonical_audio_path,
                         "filename": sample.filename,
                         "caption": caption,
                         "lyrics": lyrics,
@@ -280,9 +326,12 @@ class PreprocessMixin:
                     },
                 }
 
-                output_path = os.path.join(output_dir, f"{sample.id}.pt")
+                output_path = resolve_tensor_output_path(output_dir, sample_id)
                 t0 = debug_start_verbose_for("dataset", f"torch.save[{i}]")
-                torch.save(output_data, output_path)
+                atomic_write_with(
+                    output_path,
+                    lambda temporary: torch.save(output_data, temporary),
+                )
                 debug_end_verbose_for("dataset", f"torch.save[{i}]", t0)
                 output_paths.append(output_path)
                 success_count += 1
