@@ -160,17 +160,9 @@ replace_once(
 )
 replace_once(
     "acestep/api/job_execution_runtime.py",
-    '''    except Exception as exc:
-        error_traceback = traceback.format_exc()
-        log_fn(f"[API Server] Job {job_id} FAILED: {exc}")
-        log_fn(f"[API Server] Traceback:\n{error_traceback}")
-        job_store.mark_failed(job_id, error_traceback)
+    '''        job_store.mark_failed(job_id, error_traceback)
 ''',
-    '''    except Exception as exc:
-        error_traceback = traceback.format_exc()
-        log_fn(f"[API Server] Job {job_id} FAILED: {exc}")
-        log_fn(f"[API Server] Traceback:\n{error_traceback}")
-        cancellation_reason = job_store.cancellation_reason(job_id)
+    '''        cancellation_reason = job_store.cancellation_reason(job_id)
         job_store.mark_failed(job_id, cancellation_reason or error_traceback)
 ''',
 )
