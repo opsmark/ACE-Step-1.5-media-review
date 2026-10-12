@@ -32,22 +32,19 @@ class SerializationMixin:
         return resolve_dataset_audio_root(manifest_path, explicit_root=trusted)
 
     def save_dataset(self, output_path: str, dataset_name: str = None) -> str:
-        """Save the dataset after revalidating every security-sensitive field."""
+        """Save the dataset after revalidating every security-sensitive field.
+
+        Metadata updates are staged with the serialized payload and become
+        visible on the builder only after the atomic file replacement succeeds.
+        A rejected or interrupted save therefore preserves the caller's prior
+        in-memory dataset state.
+        """
 
         if not self.samples:
             return "❌ No samples to save"
 
-        original_name = self.metadata.name
-        if dataset_name:
-            self.metadata.name = dataset_name
-
-        self.metadata.num_samples = len(self.samples)
-        self.metadata.created_at = datetime.now().isoformat()
-
         try:
             validated_output = safe_path(output_path)
-            parent = os.path.dirname(validated_output)
-            os.makedirs(parent if parent else ".", exist_ok=True)
             approved_root = self._trusted_audio_root_for_manifest(validated_output)
 
             serialized_samples = []
@@ -71,8 +68,18 @@ class SerializationMixin:
                 payload["filename"] = os.path.basename(canonical_audio)
                 serialized_samples.append(payload)
 
+            staged_name = dataset_name if dataset_name is not None else self.metadata.name
+            staged_created_at = datetime.now().isoformat()
+            staged_metadata = self.metadata.to_dict()
+            staged_metadata.update(
+                {
+                    "name": staged_name,
+                    "num_samples": len(self.samples),
+                    "created_at": staged_created_at,
+                }
+            )
             dataset = {
-                "metadata": self.metadata.to_dict(),
+                "metadata": staged_metadata,
                 "samples": serialized_samples,
             }
             encoded = json.dumps(dataset, indent=2, ensure_ascii=False)
@@ -89,12 +96,15 @@ class SerializationMixin:
 
             atomic_write_with(validated_output, _write_manifest)
 
+            # Publish metadata only after the durable replacement completed.
+            self.metadata.name = staged_name
+            self.metadata.num_samples = len(self.samples)
+            self.metadata.created_at = staged_created_at
             return (
                 f"✅ Dataset saved to {validated_output}\n"
                 f"{len(self.samples)} samples, tag: '{self.metadata.custom_tag}'"
             )
         except Exception as exc:
-            self.metadata.name = original_name if dataset_name else self.metadata.name
             logger.exception("Error saving dataset")
             return f"❌ Failed to save dataset: {str(exc)}"
 
