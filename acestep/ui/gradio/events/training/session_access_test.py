@@ -66,7 +66,7 @@ class TrainingSessionAccessTests(unittest.TestCase):
             builder = _builder(audio, scope)
             authorized, error = validate_builder_audio_paths(builder, must_exist=True)
             self.assertTrue(authorized, error)
-            self.assertEqual(str(audio.resolve()), authorize_builder_sample(builder, 0))
+            self.assertTrue(os.path.samefile(audio, authorize_builder_sample(builder, 0)))
 
     def test_current_session_generated_audio_is_allowed(self) -> None:
         """The active page may train from media that it generated itself."""
@@ -78,7 +78,7 @@ class TrainingSessionAccessTests(unittest.TestCase):
             builder = _builder(audio, scope)
             authorized, error = validate_builder_audio_paths(builder, must_exist=True)
             self.assertTrue(authorized, error)
-            self.assertEqual(str(audio.resolve()), authorize_builder_sample(builder, 0))
+            self.assertTrue(os.path.samefile(audio, authorize_builder_sample(builder, 0)))
 
     def test_other_session_generated_audio_is_denied(self) -> None:
         """A builder cannot preview or process media owned by another page."""
