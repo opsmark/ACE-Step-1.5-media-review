@@ -10,5 +10,13 @@ new_count = '''    expected=2,\n)\n# format_input and release_task use the same 
 
 if text.count(old_count) != 1:
     raise RuntimeError("Expected exactly one parser-count repair target")
-path.write_text(text.replace(old_count, new_count, 1), encoding="utf-8")
-print("generation resource builder parser coverage repaired")
+text = text.replace(old_count, new_count, 1)
+
+old_cancel = '''        reason = store.cancellation_reason(job_id)\n'''
+new_cancel = '''        cancellation_checker = getattr(store, "cancellation_reason", None)\n        reason = cancellation_checker(job_id) if callable(cancellation_checker) else None\n'''
+if text.count(old_cancel) != 1:
+    raise RuntimeError("Expected exactly one queue cancellation compatibility target")
+text = text.replace(old_cancel, new_cancel, 1)
+
+path.write_text(text, encoding="utf-8")
+print("generation resource builder parser and queue compatibility repaired")
